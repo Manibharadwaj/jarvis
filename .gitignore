@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.pyc
+__pycache__/
+.pub-cache/
+build/
+.idea/
+.vscode/
+*.log
+.DS_Store
+certbot/
