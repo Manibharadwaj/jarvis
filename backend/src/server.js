@@ -138,13 +138,28 @@ const TZ = 'Asia/Kolkata';
 // 5:00 AM — Wakeup call
 cron.schedule('0 5 * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
 
-// 5:20 AM — Wakeup retry 1
+// 5:20 AM — Wakeup retry 1 (every 20 min until answered)
 cron.schedule('20 5 * * *', async () => {
   if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
 }, { timezone: TZ });
 
 // 5:40 AM — Wakeup retry 2
 cron.schedule('40 5 * * *', async () => {
+  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
+}, { timezone: TZ });
+
+// 6:00 AM — Wakeup retry 3
+cron.schedule('0 6 * * *', async () => {
+  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
+}, { timezone: TZ });
+
+// 6:20 AM — Wakeup retry 4
+cron.schedule('20 6 * * *', async () => {
+  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
+}, { timezone: TZ });
+
+// 6:40 AM — Wakeup retry 5 (final attempt)
+cron.schedule('40 6 * * *', async () => {
   if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
 }, { timezone: TZ });
 
@@ -419,5 +434,5 @@ app.listen(PORT, async () => {
 
   console.log(`Firebase Admin: project ${serviceAccount.project_id} ✓`);
   if (LIVEKIT_URL) console.log(`LiveKit: ${LIVEKIT_URL} ✓`);
-  console.log('Scheduler armed (IST): 5AM wakeup, 8/12/4/8PM checkins, 11PM evening');
+  console.log('Scheduler armed (IST): 5AM wakeup (retries every 20min until 6:40AM), 8AM/12PM/4PM/8PM checkins, 11PM evening');
 });

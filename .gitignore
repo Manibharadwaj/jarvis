@@ -48,4 +48,5 @@ Thumbs.db
 *.jpeg
 *.jpg
 *.png
-*.gif
+*.gifpids/
+agent/package-lock.json
