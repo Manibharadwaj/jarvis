@@ -1,12 +1,51 @@
-node_modules/
-dist/
+# ── Secrets ──────────────────────────────────────────────────
 .env
-*.pyc
+.env.*
+!.env.example
+*.key
+*.pem
+service-account.json
+device_tokens.json
+
+# ── Python ──────────────────────────────────────────────────
 __pycache__/
-.pub-cache/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
 build/
-.idea/
+
+# ── Node ─────────────────────────────────────────────────────
+node_modules/
+
+# ── Flutter / Dart ──────────────────────────────────────────
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+*.lock
+!pubspec.lock
+
+# ── IDE ──────────────────────────────────────────────────────
 .vscode/
-*.log
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ──────────────────────────────────────────────────────
 .DS_Store
-certbot/
+Thumbs.db
+
+# ── Logs / temp ─────────────────────────────────────────────
+*.log
+*.wav
+*.mp3
+
+# ── Misc ────────────────────────────────────────────────────
+*.jpeg
+*.jpg
+*.png
+*.gif
