@@ -22,7 +22,7 @@ const LIVEKIT_API_KEY  = process.env.LIVEKIT_API_KEY || '';
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || '';
 const AGENT_SECRET     = process.env.AGENT_SECRET || 'jarvis-agent-2024';
 const OLLAMA_KEY       = process.env.OLLAMA_API_KEY || '';
-const MODEL_NAME       = process.env.OLLAMA_MODEL || 'gpt-oss:120b';
+const MODEL_NAME       = process.env.OLLAMA_MODEL || 'gemma3:4b';
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
@@ -181,14 +181,14 @@ app.post('/api/chat', async (req, res) => {
     const CHAT   = `You are Jarvis, Tony Stark's AI. Loyal, professional, British, witty. Under 3 sentences. No markdown.`;
     const system = mode === 'chat' ? CHAT : VERIFY;
 
-    const resp = await fetch('https://ollama.com/api/chat', {
+    const resp = await fetch('https://ollama.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OLLAMA_KEY}` },
       body: JSON.stringify({ model: MODEL_NAME, messages: [{ role: 'system', content: system }, ...messages], stream: false }),
     });
     if (!resp.ok) return res.status(502).json({ error: 'Ollama error', detail: await resp.text() });
     const data = await resp.json();
-    res.json({ response: data.message.content });
+    res.json({ response: data.choices[0].message.content });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
