@@ -101,41 +101,44 @@ async function pushCall(roomName, callType) {
 async function triggerScheduledCall(callType) {
   if (!LIVEKIT_URL) return;
   try {
-    // 1. Skip if already answered today
-    const answered = await pool.query(
-      `SELECT 1 FROM public.call_queue
-       WHERE call_type = $1 AND status = 'answered'
-       AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-       LIMIT 1`,
-      [callType]
-    );
-    if (answered.rowCount > 0) {
-      console.log(`[Scheduler] ${callType} already answered today — skipping`);
-      return;
+    // Dedup only applies to wakeup retries — checkins/evening always fire
+    if (callType === 'wakeup') {
+      // Skip if already answered today
+      const answered = await pool.query(
+        `SELECT 1 FROM public.call_queue
+         WHERE call_type = $1 AND status = 'answered'
+         AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+         LIMIT 1`,
+        [callType]
+      );
+      if (answered.rowCount > 0) {
+        console.log(`[Scheduler] ${callType} already answered today — skipping`);
+        return;
+      }
+
+      // Skip if a call was sent in the last 5 minutes (avoid spam)
+      const pending = await pool.query(
+        `SELECT 1 FROM public.call_queue
+         WHERE call_type = $1 AND status = 'sent'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+         LIMIT 1`,
+        [callType]
+      );
+      if (pending.rowCount > 0) {
+        console.log(`[Scheduler] ${callType} already has a pending call — skipping`);
+        return;
+      }
+
+      // Mark old unanswered calls as missed before retrying
+      await pool.query(
+        `UPDATE public.call_queue SET status = 'missed'
+         WHERE call_type = $1 AND status = 'sent'
+         AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date`,
+        [callType]
+      );
     }
 
-    // 2. Skip if a call was sent in the last 5 minutes (avoid spam)
-    const pending = await pool.query(
-      `SELECT 1 FROM public.call_queue
-       WHERE call_type = $1 AND status = 'sent'
-       AND created_at > NOW() - INTERVAL '5 minutes'
-       LIMIT 1`,
-      [callType]
-    );
-    if (pending.rowCount > 0) {
-      console.log(`[Scheduler] ${callType} already has a pending call — skipping`);
-      return;
-    }
-
-    // 3. Mark old unanswered calls as missed before sending a new one
-    await pool.query(
-      `UPDATE public.call_queue SET status = 'missed'
-       WHERE call_type = $1 AND status = 'sent'
-       AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date`,
-      [callType]
-    );
-
-    // 4. Send the call
+    // Send the call
     const roomName = await createScheduledRoom(callType);
     await pushCall(roomName, callType);
     console.log(`[Scheduler] ${callType} call triggered → room: ${roomName}`);
