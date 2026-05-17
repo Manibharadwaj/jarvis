@@ -47,22 +47,6 @@ async function getUserId() {
   }
 }
 
-async function wasAnsweredToday(callType) {
-  try {
-    const result = await pool.query(
-      `SELECT 1 FROM public.call_queue
-       WHERE call_type = $1 AND status = 'answered'
-       AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-       LIMIT 1`,
-      [callType]
-    );
-    return result.rowCount > 0;
-  } catch (err) {
-    console.error('wasAnsweredToday failed:', err.message);
-    return false;
-  }
-}
-
 // ── Firebase ──────────────────────────────────────────────────────────────────
 
 const serviceAccount = JSON.parse(
@@ -117,9 +101,45 @@ async function pushCall(roomName, callType) {
 async function triggerScheduledCall(callType) {
   if (!LIVEKIT_URL) return;
   try {
+    // 1. Skip if already answered today
+    const answered = await pool.query(
+      `SELECT 1 FROM public.call_queue
+       WHERE call_type = $1 AND status = 'answered'
+       AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+       LIMIT 1`,
+      [callType]
+    );
+    if (answered.rowCount > 0) {
+      console.log(`[Scheduler] ${callType} already answered today — skipping`);
+      return;
+    }
+
+    // 2. Skip if a call was sent in the last 5 minutes (avoid spam)
+    const pending = await pool.query(
+      `SELECT 1 FROM public.call_queue
+       WHERE call_type = $1 AND status = 'sent'
+       AND created_at > NOW() - INTERVAL '5 minutes'
+       LIMIT 1`,
+      [callType]
+    );
+    if (pending.rowCount > 0) {
+      console.log(`[Scheduler] ${callType} already has a pending call — skipping`);
+      return;
+    }
+
+    // 3. Mark old unanswered calls as missed before sending a new one
+    await pool.query(
+      `UPDATE public.call_queue SET status = 'missed'
+       WHERE call_type = $1 AND status = 'sent'
+       AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date`,
+      [callType]
+    );
+
+    // 4. Send the call
     const roomName = await createScheduledRoom(callType);
     await pushCall(roomName, callType);
     console.log(`[Scheduler] ${callType} call triggered → room: ${roomName}`);
+
     // Log to DB — best-effort, don't block push
     pool.query(
       `INSERT INTO public.call_queue (call_type, scheduled_at, status, room_name)
@@ -135,39 +155,23 @@ async function triggerScheduledCall(callType) {
 
 const TZ = 'Asia/Kolkata';
 
-// 5:00 AM — Wakeup call
-cron.schedule('0 5 * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
-
-// 5:20 AM — Wakeup retry 1 (every 20 min until answered)
-cron.schedule('20 5 * * *', async () => {
-  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
-}, { timezone: TZ });
-
-// 5:40 AM — Wakeup retry 2
-cron.schedule('40 5 * * *', async () => {
-  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
-}, { timezone: TZ });
-
-// 6:00 AM — Wakeup retry 3
-cron.schedule('0 6 * * *', async () => {
-  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
-}, { timezone: TZ });
-
-// 6:20 AM — Wakeup retry 4
-cron.schedule('20 6 * * *', async () => {
-  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
-}, { timezone: TZ });
-
-// 6:40 AM — Wakeup retry 5 (final attempt)
-cron.schedule('40 6 * * *', async () => {
-  if (!await wasAnsweredToday('wakeup')) triggerScheduledCall('wakeup');
-}, { timezone: TZ });
+// Wakeup: 5 AM + retries at 5:20, 5:40, 6:00, 6:20, 6:40
+// Deduplication is built into triggerScheduledCall:
+//   - Skips if already answered today
+//   - Skips if a call was sent in the last 5 min (no spam)
+//   - Marks old unanswered calls as missed before retrying
+cron.schedule('0  5  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
+cron.schedule('20 5  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
+cron.schedule('40 5  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
+cron.schedule('0  6  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
+cron.schedule('20 6  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
+cron.schedule('40 6  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
 
 // Check-ins at 8 AM, 12 PM, 4 PM, 8 PM
 cron.schedule('0 8  * * *', () => triggerScheduledCall('checkin'), { timezone: TZ });
 cron.schedule('0 12 * * *', () => triggerScheduledCall('checkin'), { timezone: TZ });
 cron.schedule('0 16 * * *', () => triggerScheduledCall('checkin'), { timezone: TZ });
-cron.schedule('0 20 * * *', () => triggerScheduledCall('checkin'), { timezone: TZ });
+cron.schedule('0 20 * * *', () => triggerScheduledCall('evening'), { timezone: TZ });
 
 // 11:00 PM — Evening review
 cron.schedule('0 23 * * *', () => triggerScheduledCall('evening'), { timezone: TZ });
@@ -437,5 +441,5 @@ app.listen(PORT, async () => {
 
   console.log(`Firebase Admin: project ${serviceAccount.project_id} ✓`);
   if (LIVEKIT_URL) console.log(`LiveKit: ${LIVEKIT_URL} ✓`);
-  console.log('Scheduler armed (IST): 5AM wakeup (retries every 20min until 6:40AM), 8AM/12PM/4PM/8PM checkins, 11PM evening');
+  console.log('Scheduler armed (IST): wakeup 5AM-6:40AM (retries with dedup), checkins 8AM/12PM/4PM/8PM, evening 11PM');
 });
