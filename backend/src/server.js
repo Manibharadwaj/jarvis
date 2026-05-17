@@ -22,7 +22,7 @@ const LIVEKIT_API_KEY  = process.env.LIVEKIT_API_KEY || '';
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || '';
 const AGENT_SECRET     = process.env.AGENT_SECRET || 'jarvis-agent-2024';
 const OLLAMA_KEY       = process.env.OLLAMA_API_KEY || '';
-const MODEL_NAME       = process.env.OLLAMA_MODEL || 'gemma3:4b';
+const MODEL_NAME       = process.env.OLLAMA_MODEL || 'gemma4:31b';
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
@@ -243,9 +243,9 @@ app.post('/api/voice/start', async (req, res) => {
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET)
     return res.status(503).json({ error: 'LiveKit not configured' });
   try {
-    const roomName = `jarvis-${Date.now()}`;
-    const roomService = new RoomServiceClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
-    await roomService.createRoom({ name: roomName, emptyTimeout: 300 });
+    // Use the call type from the push notification data, default to 'wakeup'
+    const callType = req.body.call_type || req.query.call_type || 'wakeup';
+    const roomName = await createScheduledRoom(callType);
     const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, { identity: 'stark', ttl: '1h' });
     at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
     const token = await at.toJwt();
@@ -325,11 +325,14 @@ app.post('/api/agent/task', agentAuth, async (req, res) => {
     const { title, time_slot, category } = req.body;
     if (!title) return res.status(400).json({ error: 'title required' });
 
+    const validCategories = ['work', 'code', 'gym', 'food', 'books', 'personal', 'other'];
+    const safeCategory = validCategories.includes(category) ? category : 'other';
+
     const result = await pool.query(
       `INSERT INTO public.master_schedule (user_id, date, title, time_slot, category)
        VALUES ($1, (NOW() AT TIME ZONE 'Asia/Kolkata')::date, $2, $3, $4)
        RETURNING id`,
-      [userId, title, time_slot || null, category || 'other']
+      [userId, title, time_slot || null, safeCategory]
     );
     res.json({ ok: true, id: result.rows[0].id });
   } catch (err) {

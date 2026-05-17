@@ -195,8 +195,11 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     _stopRingtone();
     await _room?.disconnect();
     if (!mounted) return;
-    setState(() => _state = CallState.ended);
-    await Future.delayed(const Duration(seconds: 1));
+    setState(() {
+      _state = CallState.ended;
+      _statusDetail = 'Goodbye, Mr. Stark';
+    });
+    await Future.delayed(const Duration(seconds: 2));
     if (mounted) Navigator.pop(context);
   }
 
@@ -213,7 +216,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       case CallState.userSpeaking:
         return 'Listening...';
       case CallState.ended:
-        return 'Call Ended';
+        return _statusDetail.isNotEmpty ? _statusDetail : 'Call Ended';
       case CallState.missed:
         return 'Call Missed';
       case CallState.error:

@@ -9,7 +9,6 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.app.Person
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -64,25 +63,7 @@ class CallNotificationService : FirebaseMessagingService() {
             }
         }
 
-        val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
-            action = CallActionReceiver.ACTION_ANSWER
-            putExtra(CallActionReceiver.EXTRA_CALLER, caller)
-            putExtra(CallActionReceiver.EXTRA_ROOM_NAME, roomName)
-            putExtra(CallActionReceiver.EXTRA_CALL_TYPE, callType)
-        }
-        val answerPi = PendingIntent.getBroadcast(
-            this, 0, answerIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val rejectIntent = Intent(this, CallActionReceiver::class.java).apply {
-            action = CallActionReceiver.ACTION_REJECT
-        }
-        val rejectPi = PendingIntent.getBroadcast(
-            this, 1, rejectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
+        // Tapping the notification opens the app directly to the call screen
         val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
             putExtra("type", "incoming_call")
             putExtra("caller", caller)
@@ -97,25 +78,14 @@ class CallNotificationService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val callerPerson = Person.Builder().setName(caller).setImportant(true).build()
-
         val builder = NotificationCompat.Builder(this, IncomingCallService.CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Incoming call from $caller")
+            .setContentText("Tap to answer")
             .setFullScreenIntent(fullScreenPi, true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setStyle(
-                NotificationCompat.CallStyle.forIncomingCall(callerPerson, answerPi, rejectPi)
-            )
-        } else {
-            builder.setContentTitle("Incoming call from $caller")
-                .setContentText("Tap to answer")
-                .addAction(NotificationCompat.Action.Builder(null, "Answer", answerPi).build())
-                .addAction(NotificationCompat.Action.Builder(null, "Reject", rejectPi).build())
-        }
 
         manager.notify(IncomingCallService.NOTIFICATION_ID, builder.build())
     }

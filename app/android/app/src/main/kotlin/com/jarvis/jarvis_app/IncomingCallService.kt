@@ -19,7 +19,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.app.Person
 
 class IncomingCallService : Service() {
 
@@ -194,23 +193,6 @@ class IncomingCallService : Service() {
     }
 
     private fun buildCallNotification(caller: String): Notification {
-        val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
-            action = CallActionReceiver.ACTION_ANSWER
-            putExtra(CallActionReceiver.EXTRA_CALLER, caller)
-        }
-        val answerPi = PendingIntent.getBroadcast(
-            this, 0, answerIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val rejectIntent = Intent(this, CallActionReceiver::class.java).apply {
-            action = CallActionReceiver.ACTION_REJECT
-        }
-        val rejectPi = PendingIntent.getBroadcast(
-            this, 1, rejectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
             putExtra("type", "incoming_call")
             putExtra("caller", caller)
@@ -223,25 +205,14 @@ class IncomingCallService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val callerPerson = Person.Builder().setName(caller).setImportant(true).build()
-
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Incoming call from $caller")
+            .setContentText("Tap to answer")
             .setFullScreenIntent(fullScreenPi, true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setStyle(
-                NotificationCompat.CallStyle.forIncomingCall(callerPerson, answerPi, rejectPi)
-            )
-        } else {
-            builder.setContentTitle("Incoming call from $caller")
-                .setContentText("Tap to answer")
-                .addAction(NotificationCompat.Action.Builder(null, "Answer", answerPi).build())
-                .addAction(NotificationCompat.Action.Builder(null, "Reject", rejectPi).build())
-        }
 
         return builder.build()
     }
