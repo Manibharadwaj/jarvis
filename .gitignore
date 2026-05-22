@@ -6,8 +6,9 @@
 *.pem
 service-account.json
 device_tokens.json
+google-services.json
 
-# ── Python ──────────────────────────────────────────────────
+# ── Python ────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -20,7 +21,7 @@ build/
 # ── Node ─────────────────────────────────────────────────────
 node_modules/
 
-# ── Flutter / Dart ──────────────────────────────────────────
+# ── Flutter / Dart ────────────────────────────────────────────
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
@@ -39,14 +40,20 @@ build/
 .DS_Store
 Thumbs.db
 
-# ── Logs / temp ─────────────────────────────────────────────
+# ── Logs / temp / runtime ───────────────────────────────────
 *.log
 *.wav
 *.mp3
+logs/
+pids/
+*.pid
 
-# ── Misc ────────────────────────────────────────────────────
+# ── Images ──────────────────────────────────────────────────
 *.jpeg
 *.jpg
 *.png
-*.gifpids/
-agent/package-lock.json
+*.gif
+
+# ── DB migrations runtime ─────────────────────────────────────
+db/node_modules/
+db/backend.log

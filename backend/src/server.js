@@ -20,9 +20,10 @@ const PORT             = process.env.PORT || 3000;
 const LIVEKIT_URL      = process.env.LIVEKIT_URL || '';
 const LIVEKIT_API_KEY  = process.env.LIVEKIT_API_KEY || '';
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || '';
-const AGENT_SECRET     = process.env.AGENT_SECRET || 'jarvis-agent-2024';
+const AGENT_SECRET     = process.env.AGENT_SECRET || '';
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'https://ollama.com/v1';
 const OLLAMA_KEY       = process.env.OLLAMA_API_KEY || '';
-const MODEL_NAME       = process.env.OLLAMA_MODEL || 'gemma4:31b';
+const MODEL_NAME       = process.env.OLLAMA_MODEL || 'gemma3:12b';
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
@@ -197,15 +198,17 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 app.post('/api/chat', async (req, res) => {
   try {
     const { messages, mode } = req.body;
-    if (!OLLAMA_KEY) return res.status(400).json({ error: 'OLLAMA_API_KEY not set' });
 
     const VERIFY = `You are Jarvis, Tony Stark's AI. CRITICAL: Start EVERY response with "GRANTED:" or "DENIED:". Secret: "I'm Tony Stark". If correct say GRANTED: and welcome. If wrong say DENIED: and ask again. Under 2 sentences.`;
     const CHAT   = `You are Jarvis, Tony Stark's AI. Loyal, professional, British, witty. Under 3 sentences. No markdown.`;
     const system = mode === 'chat' ? CHAT : VERIFY;
 
-    const resp = await fetch('https://ollama.com/v1/chat/completions', {
+    const headers = { 'Content-Type': 'application/json' };
+    if (OLLAMA_KEY) headers['Authorization'] = `Bearer ${OLLAMA_KEY}`;
+
+    const resp = await fetch(`${OLLAMA_BASE_URL}/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OLLAMA_KEY}` },
+      headers,
       body: JSON.stringify({ model: MODEL_NAME, messages: [{ role: 'system', content: system }, ...messages], stream: false }),
     });
     if (!resp.ok) return res.status(502).json({ error: 'Ollama error', detail: await resp.text() });
