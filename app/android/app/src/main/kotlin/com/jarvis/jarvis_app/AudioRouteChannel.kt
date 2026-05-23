@@ -3,6 +3,7 @@ package com.jarvis.jarvis_app
 import android.content.Context
 import android.media.AudioManager
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 class AudioRouteChannel : MethodChannel.MethodCallHandler {
@@ -15,7 +16,7 @@ class AudioRouteChannel : MethodChannel.MethodCallHandler {
             .setMethodCallHandler(this)
     }
 
-    override fun onMethodCall(call: MethodChannel.MethodCall, result: MethodChannel.Result) {
+    override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         val am = audioManager ?: return result.error("NO_AM", "AudioManager not available", null)
         when (call.method) {
             "setSpeaker" -> {
