@@ -6,6 +6,9 @@ import 'package:http/http.dart' as http;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import '../config.dart';
 import 'call_screen.dart';
+import '../services/api_service.dart';
+import '../utils/call_types.dart';
+import '../widgets/verify_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,6 +21,9 @@ class _HomeScreenState extends State<HomeScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   late AnimationController _animCtrl;
   late Animation<double> _pulseAnim;
+  int _tasksDone = 0;
+  int _tasksTotal = 0;
+  String _lastCallStatus = '';
 
   @override
   void initState() {
@@ -32,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     _initFcm();
     _listenOpenedApp();
+    _loadStatus();
   }
 
   @override
@@ -42,7 +49,34 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {}
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _loadStatus();
+  }
+
+  Future<void> _loadStatus() async {
+    final data = await ApiService.getTodayData();
+    if (!mounted) return;
+    if (data != null) {
+      final tasks = List<Map<String, dynamic>>.from(data['tasks'] ?? []);
+      final done = tasks.where((t) {
+        final d = t['done'];
+        return d is bool ? d : d == true || d == 'true';
+      }).length;
+      setState(() {
+        _tasksDone = done;
+        _tasksTotal = tasks.length;
+      });
+    }
+    final calls = await ApiService.getCallHistory(limit: 1);
+    if (!mounted) return;
+    if (calls.isNotEmpty) {
+      final last = calls.first;
+      final type = callTypeLabel(last['call_type']);
+      final status = last['status'];
+      final statusText = status == 'completed' ? 'Done' : (status ?? 'Unknown');
+      setState(() => _lastCallStatus = '$type · $statusText');
+    }
+  }
 
   Future<void> _initFcm() async {
     final messaging = FirebaseMessaging.instance;
@@ -65,9 +99,15 @@ class _HomeScreenState extends State<HomeScreen>
 
     FirebaseMessaging.onMessage.listen((message) {
       if (message.data['type'] == 'incoming_call' && mounted) {
+        final roomName = message.data['room_name'] as String?;
+        final callType = message.data['call_type'] as String?;
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const CallScreen()),
+          MaterialPageRoute(builder: (_) => CallScreen(
+            roomName: (roomName != null && roomName.isNotEmpty) ? roomName : null,
+            callType: callType,
+            autoAnswer: true,
+          )),
         );
       }
     });
@@ -76,9 +116,16 @@ class _HomeScreenState extends State<HomeScreen>
   void _listenOpenedApp() {
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
       if (message.data['type'] == 'incoming_call' && mounted) {
-        Navigator.push(
+        final roomName = message.data['room_name'] as String?;
+        final callType = message.data['call_type'] as String?;
+        Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const CallScreen()),
+          MaterialPageRoute(builder: (_) => CallScreen(
+            roomName: (roomName != null && roomName.isNotEmpty) ? roomName : null,
+            callType: callType,
+            autoAnswer: true,
+          )),
+          (_) => false,
         );
       }
     });
@@ -149,15 +196,24 @@ class _HomeScreenState extends State<HomeScreen>
               ),
               const SizedBox(height: 60),
               GestureDetector(
-                onTap: () => Navigator.push(
-                  context,
-                  PageRouteBuilder(
-                    pageBuilder: (_, __, ___) => const CallScreen(),
-                    transitionsBuilder: (_, a, __, child) =>
-                        FadeTransition(opacity: a, child: child),
-                    transitionDuration: const Duration(milliseconds: 500),
-                  ),
-                ),
+                onTap: () async {
+                  final verified = await showDialog<bool>(
+                    context: context,
+                    barrierDismissible: true,
+                    builder: (_) => const VerifyDialog(),
+                  );
+                  if (verified == true && mounted) {
+                    Navigator.push(
+                      context,
+                      PageRouteBuilder(
+                        pageBuilder: (_, __, ___) => const CallScreen(),
+                        transitionsBuilder: (_, a, __, child) =>
+                            FadeTransition(opacity: a, child: child),
+                        transitionDuration: const Duration(milliseconds: 500),
+                      ),
+                    );
+                  }
+                },
                 child: AnimatedBuilder(
                   animation: _animCtrl,
                   builder: (context, child) => Transform.scale(
@@ -189,6 +245,29 @@ class _HomeScreenState extends State<HomeScreen>
                   color: Colors.cyanAccent.withValues(alpha: 0.4),
                 ),
               ),
+              if (_tasksTotal > 0 || _lastCallStatus.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                if (_tasksTotal > 0)
+                  Text(
+                    '$_tasksDone/$_tasksTotal tasks done',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: _tasksDone == _tasksTotal
+                          ? const Color(0xFF00FF88)
+                          : Colors.grey[500],
+                    ),
+                  ),
+                if (_lastCallStatus.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    _lastCallStatus,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ],
               const Spacer(),
               Text(
                 'v1.1.0',

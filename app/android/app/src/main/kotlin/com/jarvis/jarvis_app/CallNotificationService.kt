@@ -36,7 +36,7 @@ class CallNotificationService : FirebaseMessagingService() {
             Log.e(TAG, "Failed to post notification from FCM", e)
         }
 
-        IncomingCallService.start(this, caller)
+        IncomingCallService.start(this, caller, roomName, callType)
         Log.d(TAG, "IncomingCallService start requested for call from $caller")
     }
 

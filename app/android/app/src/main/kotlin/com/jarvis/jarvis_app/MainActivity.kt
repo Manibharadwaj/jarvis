@@ -86,6 +86,7 @@ class MainActivity : FlutterActivity() {
 
         createChannels()
         startForegroundService()
+        AudioRouteChannel().start(flutterEngine, this)
     }
 
     override fun onNewIntent(intent: Intent) {

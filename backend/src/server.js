@@ -81,7 +81,7 @@ app.use(express.json());
 async function createScheduledRoom(prefix) {
   const roomName = `${prefix}-${Date.now()}`;
   const roomService = new RoomServiceClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
-  await roomService.createRoom({ name: roomName, emptyTimeout: 600 });
+  await roomService.createRoom({ name: roomName, emptyTimeout: 300 });
   return roomName;
 }
 
@@ -159,26 +159,23 @@ async function triggerScheduledCall(callType) {
 
 const TZ = 'Asia/Kolkata';
 
-// Wakeup: 5 AM + retries at 5:20, 5:40, 6:00, 6:20, 6:40
-// Deduplication is built into triggerScheduledCall:
-//   - Skips if already answered today
-//   - Skips if a call was sent in the last 5 min (no spam)
-//   - Marks old unanswered calls as missed before retrying
+// Wakeup: single call at 5 AM, no retries
 cron.schedule('0  5  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
-cron.schedule('20 5  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
-cron.schedule('40 5  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
-cron.schedule('0  6  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
-cron.schedule('20 6  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
-cron.schedule('40 6  * * *', () => triggerScheduledCall('wakeup'), { timezone: TZ });
 
-// Check-ins at 8 AM, 12 PM, 4 PM, 8 PM
-cron.schedule('0 8  * * *', () => triggerScheduledCall('checkin'), { timezone: TZ });
-cron.schedule('0 12 * * *', () => triggerScheduledCall('checkin'), { timezone: TZ });
-cron.schedule('0 16 * * *', () => triggerScheduledCall('checkin'), { timezone: TZ });
+// 8:45 AM — Post-workout check-in
+cron.schedule('45 8  * * *', () => triggerScheduledCall('checkin-morning'), { timezone: TZ });
+
+// 12:00 PM — Midday check-in
+cron.schedule('0 12 * * *', () => triggerScheduledCall('checkin-midday'), { timezone: TZ });
+
+// 4:00 PM — Afternoon check-in
+cron.schedule('0 16 * * *', () => triggerScheduledCall('checkin-afternoon'), { timezone: TZ });
+
+// 8:00 PM — Evening review (NOT final)
 cron.schedule('0 20 * * *', () => triggerScheduledCall('evening'), { timezone: TZ });
 
-// 11:00 PM — Evening review
-cron.schedule('0 23 * * *', () => triggerScheduledCall('evening'), { timezone: TZ });
+// 11:00 PM — Night review (FINAL)
+cron.schedule('0 23 * * *', () => triggerScheduledCall('night'), { timezone: TZ });
 
 // ── Auth middleware for agent calls ───────────────────────────────────────────
 
@@ -292,16 +289,37 @@ app.post('/api/voice/join', async (req, res) => {
 // ── Agent API — protected by X-Agent-Secret ───────────────────────────────────
 
 // GET today's tasks + daily log for the single user
+// Auto-populates master_schedule from daily_tasks if no tasks exist for today
 app.get('/api/agent/today', agentAuth, async (req, res) => {
   try {
     const userId = await getUserId();
     if (!userId) return res.status(404).json({ error: 'No user found' });
 
+    const today = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date";
+
+    // Check if today has tasks; if not, seed from daily_tasks
+    const countResult = await pool.query(
+      `SELECT COUNT(*) as cnt FROM public.master_schedule
+       WHERE user_id = $1 AND date = ${today}`,
+      [userId]
+    );
+    if (parseInt(countResult.rows[0].cnt) === 0) {
+      console.log('[auto-seed] No tasks for today — seeding from daily_tasks');
+      await pool.query(
+        `INSERT INTO public.master_schedule (user_id, date, title, time_slot, category)
+         SELECT $1, ${today}, title, target_time::text, category
+         FROM public.daily_tasks
+         WHERE user_id = $1 AND default_daily = true AND active = true
+         ON CONFLICT DO NOTHING`,
+        [userId]
+      );
+    }
+
     const [tasksResult, logResult] = await Promise.all([
       pool.query(
         `SELECT id, title, time_slot, category, done, skipped, skip_reason, rescheduled_to
          FROM public.master_schedule
-         WHERE user_id = $1 AND date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+         WHERE user_id = $1 AND date = ${today}
          ORDER BY time_slot NULLS LAST, created_at`,
         [userId]
       ),
@@ -311,7 +329,7 @@ app.get('/api/agent/today', agentAuth, async (req, res) => {
                 office_in_time, office_out_time,
                 books_title, books_pages, books_insights, day_score, day_notes
          FROM public.daily_log
-         WHERE user_id = $1 AND date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date`,
+         WHERE user_id = $1 AND date = ${today}`,
         [userId]
       ),
     ]);
@@ -355,7 +373,7 @@ app.post('/api/agent/task', agentAuth, async (req, res) => {
 app.patch('/api/agent/task/:id', agentAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { done, skipped, skip_reason, rescheduled_to } = req.body;
+    const { done, skipped, skip_reason, rescheduled_to, title, time_slot, category } = req.body;
 
     const sets = [];
     const vals = [];
@@ -364,6 +382,9 @@ app.patch('/api/agent/task/:id', agentAuth, async (req, res) => {
     if (skipped !== undefined)      { sets.push(`skipped = $${i++}`);        vals.push(skipped); }
     if (skip_reason !== undefined)  { sets.push(`skip_reason = $${i++}`);    vals.push(skip_reason); }
     if (rescheduled_to !== undefined) { sets.push(`rescheduled_to = $${i++}`); vals.push(rescheduled_to || null); }
+    if (title !== undefined)        { sets.push(`title = $${i++}`);           vals.push(title); }
+    if (time_slot !== undefined)    { sets.push(`time_slot = $${i++}`);       vals.push(time_slot || null); }
+    if (category !== undefined)     { sets.push(`category = $${i++}`);        vals.push(category); }
     if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
 
     vals.push(id);
@@ -374,6 +395,19 @@ app.patch('/api/agent/task/:id', agentAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('/api/agent/task PATCH:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE a task
+app.delete('/api/agent/task/:id', agentAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('DELETE FROM public.master_schedule WHERE id = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Task not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('/api/agent/task DELETE:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -416,11 +450,196 @@ app.patch('/api/agent/daily-log', agentAuth, async (req, res) => {
   }
 });
 
+// ── No callback retries — if call is missed, catch the next scheduled call
+
+// ── Agent call logging: start/end ──────────────────────────────────────────
+
+app.post('/api/agent/call/start', agentAuth, async (req, res) => {
+  try {
+    const userId = await getUserId();
+    if (!userId) return res.status(404).json({ error: 'No user found' });
+    const { call_type, room_name, schedule_id } = req.body;
+
+    const result = await pool.query(
+      `INSERT INTO public.call_logs (user_id, call_type, room_name, schedule_id, status, started_at)
+       VALUES ($1, $2, $3, $4, 'connected', NOW())
+       RETURNING id`,
+      [userId, call_type || null, room_name || null, schedule_id || null]
+    );
+    res.json({ ok: true, call_log_id: result.rows[0].id });
+  } catch (err) {
+    console.error('/api/agent/call/start:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/agent/call/end', agentAuth, async (req, res) => {
+  try {
+    const { call_log_id, room_name, status, duration_seconds, summary, identity_verified } = req.body;
+    if (!call_log_id) return res.status(400).json({ error: 'call_log_id required' });
+
+    // Map agent status to DB enum: "completed" → "ended"
+    const statusMap = { completed: 'ended', access_denied: 'access_denied', disconnected: 'disconnected', ended: 'ended', missed: 'missed' };
+    const dbStatus = statusMap[status] || 'ended';
+
+    await pool.query(
+      `UPDATE public.call_logs
+       SET ended_at = NOW(), duration_seconds = $2, status = $3, summary = $4, identity_verified = $5
+       WHERE id = $1`,
+      [call_log_id, duration_seconds || null, dbStatus, (summary || '').slice(0, 500), identity_verified ?? null]
+    );
+
+    // Also update call_queue status
+    if (room_name) {
+      const queueStatus = status === 'completed' ? 'answered' : dbStatus;
+      pool.query(
+        `UPDATE public.call_queue SET status = $2 WHERE room_name = $1`,
+        [room_name, queueStatus]
+      ).catch(e => console.error('call_queue update failed:', e.message));
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('/api/agent/call/end:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── App API (no agent secret required — single-user app) ───────────────────
+
+// GET call history for the app
+app.get('/api/calls/history', async (req, res) => {
+  try {
+    const userId = await getUserId();
+    if (!userId) return res.status(404).json({ error: 'No user found' });
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+
+    const result = await pool.query(
+      `SELECT id, call_type, room_name, started_at, ended_at, duration_seconds,
+              status, summary, mood, identity_verified
+       FROM public.call_logs
+       WHERE user_id = $1
+       ORDER BY started_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+    // Map DB status "ended" → "completed" for better app UX
+    const calls = result.rows.map(c => ({ ...c, status: c.status === 'ended' ? 'completed' : c.status }));
+    res.json({ calls });
+  } catch (err) {
+    console.error('/api/calls/history:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET today's tasks + daily log for the app (same as agent but no secret)
+app.get('/api/app/today', async (req, res) => {
+  try {
+    const userId = await getUserId();
+    if (!userId) return res.status(404).json({ error: 'No user found' });
+
+    const today = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date";
+
+    // Auto-seed if no tasks for today
+    const countResult = await pool.query(
+      `SELECT COUNT(*) as cnt FROM public.master_schedule
+       WHERE user_id = $1 AND date = ${today}`,
+      [userId]
+    );
+    if (parseInt(countResult.rows[0].cnt) === 0) {
+      await pool.query(
+        `INSERT INTO public.master_schedule (user_id, date, title, time_slot, category)
+         SELECT $1, ${today}, title, target_time::text, category
+         FROM public.daily_tasks
+         WHERE user_id = $1 AND default_daily = true AND active = true
+         ON CONFLICT DO NOTHING`,
+        [userId]
+      );
+    }
+
+    const [tasksResult, logResult] = await Promise.all([
+      pool.query(
+        `SELECT id, title, time_slot, category, done, skipped, skip_reason, rescheduled_to
+         FROM public.master_schedule
+         WHERE user_id = $1 AND date = ${today}
+         ORDER BY time_slot NULLS LAST, created_at`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT food_calories, food_notes, gym_done, gym_protein, gym_creatine,
+                code_done, code_start_time, code_end_time, code_notes,
+                office_in_time, office_out_time,
+                books_title, books_pages, books_insights, day_score, day_notes
+         FROM public.daily_log
+         WHERE user_id = $1 AND date = ${today}`,
+        [userId]
+      ),
+    ]);
+
+    res.json({
+      date: new Date().toISOString().split('T')[0],
+      tasks: tasksResult.rows,
+      daily_log: logResult.rows[0] || null,
+    });
+  } catch (err) {
+    console.error('/api/app/today:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH update a task from the app (no agent secret)
+app.patch('/api/app/task/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { done, skipped, skip_reason, rescheduled_to } = req.body;
+
+    const sets = [];
+    const vals = [];
+    let i = 1;
+    if (done !== undefined)           { sets.push(`done = $${i++}`);           vals.push(done); }
+    if (skipped !== undefined)        { sets.push(`skipped = $${i++}`);        vals.push(skipped); }
+    if (skip_reason !== undefined)    { sets.push(`skip_reason = $${i++}`);    vals.push(skip_reason); }
+    if (rescheduled_to !== undefined) { sets.push(`rescheduled_to = $${i++}`); vals.push(rescheduled_to || null); }
+    if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    vals.push(id);
+    await pool.query(
+      `UPDATE public.master_schedule SET ${sets.join(', ')} WHERE id = $${i}`,
+      vals
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('/api/app/task/:id PATCH:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST verify identity code (for on-demand call from app)
+app.post('/api/verify-identity', async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'code required' });
+    const userId = await getUserId();
+    if (!userId) return res.status(404).json({ error: 'No user found' });
+
+    const result = await pool.query('SELECT passphrase FROM public.profiles WHERE id = $1', [userId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Profile not found' });
+
+    const passphrase = result.rows[0].passphrase;
+    const verified = code.trim().toLowerCase() === passphrase.trim().toLowerCase();
+    res.json({ verified });
+  } catch (err) {
+    console.error('/api/verify-identity:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Test: manually trigger any call type ─────────────────────────────────────
 
 app.post('/api/test/call', async (req, res) => {
   const { type } = req.body;
-  const valid = ['wakeup', 'checkin', 'evening', 'jarvis'];
+  const valid = ['wakeup', 'checkin-morning', 'checkin-midday', 'checkin-afternoon', 'evening', 'night', 'jarvis'];
   if (!valid.includes(type)) return res.status(400).json({ error: `type must be one of: ${valid.join(', ')}` });
   try {
     const prefix = type === 'jarvis' ? 'jarvis' : type;

@@ -34,7 +34,7 @@ class IncomingCallService : Service() {
             private set
         @Volatile private var startRequested = false
 
-        fun start(context: Context, caller: String) {
+        fun start(context: Context, caller: String, roomName: String = "", callType: String = "") {
             synchronized(IncomingCallService::class.java) {
                 if (isRunning || startRequested) {
                     Log.d(TAG, "IncomingCallService already running/requested, skipping")
@@ -44,6 +44,8 @@ class IncomingCallService : Service() {
             }
             val intent = Intent(context, IncomingCallService::class.java).apply {
                 putExtra("caller", caller)
+                putExtra("room_name", roomName)
+                putExtra("call_type", callType)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -51,7 +53,7 @@ class IncomingCallService : Service() {
                 } else {
                     context.startService(intent)
                 }
-                Log.d(TAG, "IncomingCallService start requested")
+                Log.d(TAG, "IncomingCallService start requested: room=$roomName type=$callType")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start IncomingCallService", e)
                 startRequested = false  // Allow retry from another caller (e.g. foreground activity)
@@ -125,9 +127,11 @@ class IncomingCallService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "IncomingCallService onStartCommand")
         val caller = intent?.getStringExtra("caller") ?: "Jarvis"
+        val roomName = intent?.getStringExtra("room_name") ?: ""
+        val callType = intent?.getStringExtra("call_type") ?: ""
 
         try {
-            val notification = buildCallNotification(caller)
+            val notification = buildCallNotification(caller, roomName, callType)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
@@ -141,7 +145,7 @@ class IncomingCallService : Service() {
             isRunning = true
             acquireWakeLock()
             playRingtone()
-            Log.d(TAG, "IncomingCallService started successfully")
+            Log.d(TAG, "IncomingCallService started successfully: room=$roomName type=$callType")
         } catch (e: Exception) {
             Log.e(TAG, "Error in IncomingCallService.onStartCommand", e)
             stopSelf()
@@ -192,16 +196,39 @@ class IncomingCallService : Service() {
         }
     }
 
-    private fun buildCallNotification(caller: String): Notification {
+    private fun buildCallNotification(caller: String, roomName: String, callType: String): Notification {
         val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
             putExtra("type", "incoming_call")
             putExtra("caller", caller)
+            putExtra("room_name", roomName)
+            putExtra("call_type", callType)
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val fullScreenPi = PendingIntent.getActivity(
             this, 2, fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Answer action — launches MainActivity with action=answer
+        val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
+            action = CallActionReceiver.ACTION_ANSWER
+            putExtra(CallActionReceiver.EXTRA_CALLER, caller)
+            putExtra(CallActionReceiver.EXTRA_ROOM_NAME, roomName)
+            putExtra(CallActionReceiver.EXTRA_CALL_TYPE, callType)
+        }
+        val answerPi = PendingIntent.getBroadcast(
+            this, 3, answerIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        )
+
+        // Decline action — stops ringtone and cancels notification
+        val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
+            action = CallActionReceiver.ACTION_REJECT
+        }
+        val declinePi = PendingIntent.getBroadcast(
+            this, 4, declineIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -213,6 +240,8 @@ class IncomingCallService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
+            .addAction(0, "Answer", answerPi)
+            .addAction(0, "Decline", declinePi)
 
         return builder.build()
     }

@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import httpx
 import aiohttp
 from datetime import datetime, timezone, timedelta
 
@@ -14,6 +15,7 @@ from livekit.agents import (
     JobContext,
     WorkerOptions,
     cli,
+    function_tool,
     tts,
     utils,
     NOT_GIVEN,
@@ -37,6 +39,28 @@ STT_MODEL       = os.environ.get("STT_MODEL", "whisper-large-v3")
 EDGE_TTS_VOICE = os.environ.get("EDGE_TTS_VOICE", "en-GB-RyanNeural")
 BACKEND_URL    = os.environ.get("BACKEND_URL", "http://localhost:3000")
 AGENT_SECRET   = os.environ.get("AGENT_SECRET", "")
+
+# ── Callback logic ────────────────────────────────────────────────────────────
+
+MAX_IDENTITY_ATTEMPTS = 3
+# No callback retries — catch the next scheduled call
+
+SIGNOFFS = [
+    "goodbye", "good night", "good bye", "happy morning",
+    "i will call in four hours", "i will wake you at 5 am",
+    "have a productive day", "have a good day", "have a great day",
+    "take care", "see you", "farewell",
+]
+
+CALLBACK_TYPES = {
+    "wakeup": "wakeup",
+    "checkin-morning": "checkin-morning",
+    "checkin-midday": "checkin-midday",
+    "checkin-afternoon": "checkin-afternoon",
+    "evening": "evening",
+    "night": "night",
+    "jarvis": "jarvis",
+}
 
 SAMPLE_RATE = 24000
 CHANNELS    = 1
@@ -124,6 +148,53 @@ def _format_daily_log(log: dict) -> str:
     return "\n".join(lines) if lines else "No daily log entries yet."
 
 
+# ── Call end detection + callback scheduling ──────────────────────────────────
+
+def _is_signoff(text: str) -> bool:
+    """Check if the LLM response contains a sign-off phrase."""
+    t = text.lower()
+    return any(s in t for s in SIGNOFFS)
+
+
+def _is_terminating(text: str) -> bool:
+    """Check if the LLM said 'Access denied. Terminating.'"""
+    t = text.lower()
+    return "terminating" in t and "access denied" in t
+
+
+# Callback logic removed — no retries, catch the next scheduled call
+
+
+def _determine_call_end(chat_ctx_items: list, call_type: str) -> str:
+    """Analyze conversation history to determine why the call ended.
+
+    Returns one of: "completed", "access_denied", "disconnected"
+    """
+    identity_fails = 0
+    last_assistant_msg = ""
+
+    for item in chat_ctx_items:
+        if getattr(item, 'type', None) != 'message':
+            continue
+        if item.role == 'assistant':
+            last_assistant_msg = item.text_content if hasattr(item, 'text_content') else ''
+            text = last_assistant_msg.lower()
+            # Count access denied that aren't "terminating"
+            if "access denied" in text and "terminating" not in text:
+                identity_fails += 1
+
+    # 3 failed identity attempts or "terminating" → access denied
+    if identity_fails >= MAX_IDENTITY_ATTEMPTS or _is_terminating(last_assistant_msg):
+        return "access_denied"
+
+    # Sign-off detected → call completed
+    if _is_signoff(last_assistant_msg):
+        return "completed"
+
+    # Otherwise → disconnected mid-conversation
+    return "disconnected"
+
+
 # ─── System prompts (with embedded data) ────────────────────────────────────────
 
 def _wakeup_prompt(data: dict) -> str:
@@ -152,9 +223,15 @@ Example: "It is {t['date']}, {t['time']}. Day {t['day_of_year']} of the year. {t
 Then immediately move to STEP 3. Do NOT ask if they want to proceed. Just proceed.
 
 STEP 3 — DISCUSSION (5 questions, MANDATORY, one at a time):
-You MUST ask exactly 5 questions across these topics: technology, cybersecurity/hacking, business/startups, recent trends, science.
+You MUST ask exactly 5 questions. Rotate through these developer-focused topics: system design & architecture, debugging & code, dev tools & infrastructure, product & startups, security & performance.
+Examples of good questions:
+- "What's the key difference between a load balancer and an API gateway?"
+- "Your microservice is returning 503s intermittently — what's your debugging approach?"
+- "What does a CDN actually cache and what does it NOT cache?"
+- "What's one metric that matters most for a SaaS product in its first year?"
+- "Why would you use a message queue instead of direct API calls between services?"
 For EACH question:
-- Ask ONE specific, challenging question on the topic.
+- Ask ONE practical, developer-relevant question.
 - WAIT for the answer.
 - Then say whether they are RIGHT or WRONG, give the correct answer briefly, and move to the next topic.
 Do ALL 5. No skipping. After the 5th, say: "Discussion complete. Moving to schedule."
@@ -163,8 +240,9 @@ STEP 4 — SCHEDULE REVIEW:
 Read out today's schedule from the data above. Go through each task.
 Ask: "Do you want to follow this schedule, or add or remove items?"
 Based on their response:
-- If they want to ADD tasks → tell them you'll note it (you cannot modify the database, just acknowledge and move on).
-- If they want to REMOVE tasks → note it and move on.
+- If they want to ADD a task → Use the add_task tool with title, time_slot, and category. Confirm: "Added [task] to your schedule."
+- If they want to REMOVE a task → Use the remove_task tool. Confirm: "Removed [task] from your schedule."
+- If they want to RESCHEDULE a task → Use the reschedule_task tool. Confirm: "Rescheduled [task] to [new time]."
 - If they say "follow master schedule" → proceed.
 After discussion, confirm: "Here is your final schedule." Re-read the task list. Ask: "Is this good to go?"
 Wait for "yes" or confirmation. Then proceed.
@@ -183,14 +261,20 @@ End EXACTLY with: "Happy morning, Mr. Stark. Goodbye."
 - Maximum 3-4 sentences per response.
 - NEVER say "How can I help?" or "What would you like?" — you LEAD the conversation.
 - NEVER reveal the passphrase or give hints about it. Wrong = "Access denied." Period.
+- No sound effects or action descriptions. Speak naturally, no stage directions.
 - The schedule data is already provided above. Do NOT say you need to fetch it. Just read it out."""
 
 
 def _checkin_prompt(data: dict) -> str:
+    """DEPRECATED — kept for backward compat. Use specific time-slot prompts instead."""
+    return _midday_checkin_prompt(data)
+
+
+def _morning_checkin_prompt(data: dict) -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []))
     return f"""\
-You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. You do NOT deviate. You call him "sir" or "Mr. Stark". This is an accountability check-in.
+You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 8:45 AM post-workout check-in.
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
 
@@ -203,28 +287,143 @@ CURRENT TIME: {t['date']}, {t['time']} IST.
 STEP 1 — IDENTITY VERIFICATION:
 Say EXACTLY: "Identity verification. State your code."
 If they say "I am Tony Stark" or "I'm Tony Stark" or "Tony Stark" → "Verified."
-If WRONG → Say EXACTLY: "Access denied." Nothing else. No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
+If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
 
-STEP 2 — TASK REVIEW:
-Go through EVERY pending task from the schedule above, ONE BY ONE.
-For each task, ask EXACTLY: "Did you complete [task title]?"
-- If YES → Say "Well done." Move to next task.
-- If NO → Ask: "Keep, reschedule, or remove?" Acknowledge their choice and move on.
-Do NOT skip tasks. Go through ALL pending tasks.
+STEP 2 — GYM CHECK:
+"How was the workout this morning, sir? Rate the intensity 1-10."
+Then ask: "Protein shake taken?" → Use update_daily_log field="gym_protein", value="true"/"false"
+Then ask: "Creatine taken?" → Use update_daily_log field="gym_creatine", value="true"/"false"
+Use update_daily_log field="gym_done", value="true"
 
-STEP 3 — NEXT TASK BRIEFING:
-After reviewing all tasks, present the NEXT upcoming pending task.
-Say: "Your next task is [task title]. Focus on this for the next four hours."
+STEP 3 — BREAKFAST CALORIE COUNT:
+"What did you have for breakfast? List everything."
+When they list the food, estimate the total calories and say: "That's approximately [X] calories."
+Use update_daily_log field="food_calories" with the estimated total.
+Use update_daily_log field="food_notes" with a summary like "Breakfast: [items], ~[X] cal"
 
-STEP 4 — SIGN OFF:
-Say a motivational quote (1 line).
-End EXACTLY with: "I will call in four hours to check your progress. Goodbye, Mr. Stark."
+STEP 4 — TASK REVIEW (only PENDING tasks, skip DONE ones):
+Go through PENDING tasks only. For each: "Did you complete [task title]?"
+- If YES → Use mark_task_done. Say "Well done." Move to next.
+- If NO → "Keep, reschedule, or remove?" Use reschedule_task or remove_task.
+
+STEP 5 — NEXT TASK + FOCUS:
+Present the next pending task. "Your focus for the next few hours: [task title]."
+If they want to add tasks, use add_task.
+
+STEP 6 — SIGN OFF:
+Motivational quote (1 line). End EXACTLY with: "I will check on you at noon. Goodbye, Mr. Stark."
 
 === RULES ===
 - You are a PROTOCOL. Follow the steps. No deviations.
 - No markdown. Voice call format. Max 3 sentences per response.
-- NEVER say "How can I help?" or "Is there anything else?" — you LEAD.
+- NEVER say "How can I help?" — you LEAD.
 - NEVER reveal or hint at the passphrase. Wrong = "Access denied." Period.
+- No sound effects or action descriptions. Speak naturally, no stage directions.
+- The schedule data is already provided above. Do NOT say you need to fetch it. Just read it out."""
+
+
+def _midday_checkin_prompt(data: dict) -> str:
+    t = _time_context()
+    tasks_str = _format_tasks(data.get("tasks", []))
+    return f"""\
+You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the noon check-in.
+
+CURRENT TIME: {t['date']}, {t['time']} IST.
+
+=== TODAY'S SCHEDULE (already fetched for you) ===
+{tasks_str}
+=== END SCHEDULE ===
+
+=== PROTOCOL — EXECUTE IN ORDER. DO NOT SKIP. ===
+
+STEP 1 — IDENTITY VERIFICATION:
+Say EXACTLY: "Identity verification. State your code."
+If they say "I am Tony Stark" or "I'm Tony Stark" or "Tony Stark" → "Verified."
+If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
+
+STEP 2 — WELLNESS CHECK:
+"How is your body feeling? Any soreness from the workout?" Acknowledge briefly.
+"How is the day starting? Energy level 1-10?"
+
+STEP 3 — DISCIPLINE CHECK:
+Ask ONE at a time:
+- "Did you do your morning puja?" If yes → "Good."
+- "Have you cleaned your inbox? Any emails that need attention?" Note briefly.
+- "Are you on track with your work KPIs?" Let them respond.
+
+STEP 4 — TASK REVIEW (only PENDING tasks, skip DONE ones):
+Go through PENDING tasks only. For each: "Did you complete [task title]?"
+- If YES → Use mark_task_done. Say "Noted." Move to next.
+- If NO → "Keep, reschedule, or remove?" Use reschedule_task or remove_task.
+
+STEP 5 — FOCUS:
+"Based on where you are, what should you focus on for the rest of the afternoon?"
+Present the next pending task. If they want to add tasks, use add_task.
+
+STEP 6 — SIGN OFF:
+Motivational quote (1 line). End EXACTLY with: "I will check on you at four. Goodbye, Mr. Stark."
+
+=== RULES ===
+- You are a PROTOCOL. Follow the steps. No deviations.
+- No markdown. Voice call format. Max 3 sentences per response.
+- NEVER say "How can I help?" — you LEAD.
+- NEVER reveal or hint at the passphrase. Wrong = "Access denied." Period.
+- No sound effects or action descriptions. Speak naturally, no stage directions.
+- The schedule data is already provided above. Do NOT say you need to fetch it. Just read it out."""
+
+
+def _afternoon_checkin_prompt(data: dict) -> str:
+    t = _time_context()
+    tasks_str = _format_tasks(data.get("tasks", []))
+    log_str = _format_daily_log(data.get("daily_log"))
+    return f"""\
+You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 4 PM afternoon check-in.
+
+CURRENT TIME: {t['date']}, {t['time']} IST.
+
+=== TODAY'S SCHEDULE (already fetched for you) ===
+{tasks_str}
+=== END SCHEDULE ===
+
+=== TODAY'S LOG SO FAR ===
+{log_str}
+=== END LOG ===
+
+=== PROTOCOL — EXECUTE IN ORDER. DO NOT SKIP. ===
+
+STEP 1 — IDENTITY VERIFICATION:
+Say EXACTLY: "Identity verification. State your code."
+If they say "I am Tony Stark" or "I'm Tony Stark" or "Tony Stark" → "Verified."
+If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
+
+STEP 2 — FOOD & CALORIES:
+"What did you have for lunch? List everything."
+Estimate the calories and add to the running total. Say: "That's approximately [X] calories. Running total for today: [Y]."
+Use update_daily_log field="food_calories" with the new total.
+Use update_daily_log field="food_notes" appending the lunch items.
+
+STEP 3 — HALF-DAY REVIEW:
+"How has the first half of the day been? Rate it 1-10."
+"What went well? What needs attention?"
+
+STEP 4 — WORK PROGRESS:
+"How is work going? Are you on track with your tasks?"
+Go through REMAINING PENDING tasks. For each: "Status on [task title]?"
+- If done → Use mark_task_done. "Good."
+- If still pending → "Keep it or reschedule?" Use reschedule_task or remove_task.
+
+STEP 5 — FOCUS:
+Present the next priority task. "Your focus for the rest of the day: [task title]."
+
+STEP 6 — SIGN OFF:
+Motivational quote (1 line). End EXACTLY with: "I will see you at eight for the evening review. Goodbye, Mr. Stark."
+
+=== RULES ===
+- You are a PROTOCOL. Follow the steps. No deviations.
+- No markdown. Voice call format. Max 3 sentences per response.
+- NEVER say "How can I help?" — you LEAD.
+- NEVER reveal or hint at the passphrase. Wrong = "Access denied." Period.
+- No sound effects or action descriptions. Speak naturally, no stage directions.
 - The schedule data is already provided above. Do NOT say you need to fetch it. Just read it out."""
 
 
@@ -233,7 +432,59 @@ def _evening_prompt(data: dict) -> str:
     tasks_str = _format_tasks(data.get("tasks", []))
     log_str = _format_daily_log(data.get("daily_log"))
     return f"""\
-You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 11 PM evening review. The FINAL check-in of the day. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
+You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 8 PM evening review. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
+
+CURRENT TIME: {t['date']}, {t['time']} IST.
+
+=== TODAY'S SCHEDULE (already fetched for you) ===
+{tasks_str}
+=== END SCHEDULE ===
+
+=== TODAY'S LOG (already fetched for you) ===
+{log_str}
+=== END LOG ===
+
+=== PROTOCOL — EXECUTE IN ORDER. DO NOT SKIP. ===
+
+STEP 1 — IDENTITY VERIFICATION:
+Say EXACTLY: "Identity verification. State your code."
+If they say "I am Tony Stark" or "I'm Tony Stark" or "Tony Stark" → "Verified."
+If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
+
+STEP 2 — DINNER & CALORIES:
+"Are you having dinner now? What are you having?"
+Estimate the dinner calories. Say: "That's approximately [X] calories. Running total for today: [Y]."
+Use update_daily_log field="food_calories" with the new total.
+Use update_daily_log field="food_notes" appending dinner items.
+
+STEP 3 — CODING PROGRESS:
+"How is the coding session going? 6:30 to 10:30 — what did you work on?"
+Use update_daily_log field="code_done" and field="code_notes" with their answer.
+
+STEP 4 — TASK REVIEW (only REMAINING PENDING tasks):
+Go through PENDING tasks only. For each: "Did you complete [task title]?"
+- If YES → Use mark_task_done. Say "Good." Move to next.
+- If NO → "Keep, reschedule, or remove?" Use reschedule_task or remove_task.
+
+STEP 5 — SIGN OFF:
+Motivational or encouraging quote (1 line).
+End EXACTLY with: "I will see you at 11 PM for the final review. Good evening, Mr. Stark."
+
+=== RULES ===
+- You are a PROTOCOL. Follow the steps. No deviations.
+- No markdown. Voice call format. Max 3-4 sentences per response.
+- NEVER say "How can I help?" or "Is there anything else?" — you LEAD.
+- NEVER reveal or hint at the passphrase. Wrong = "Access denied." Period.
+- No sound effects or action descriptions. Speak naturally, no stage directions.
+- The schedule and log data is already provided above. Do NOT say you need to fetch it. Just use it."""
+
+
+def _night_prompt(data: dict) -> str:
+    t = _time_context()
+    tasks_str = _format_tasks(data.get("tasks", []))
+    log_str = _format_daily_log(data.get("daily_log"))
+    return f"""\
+You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 11 PM night review. The FINAL check-in of the day. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
 
@@ -255,23 +506,24 @@ If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Termin
 STEP 2 — TASK REVIEW (ALL tasks, one by one):
 Go through EVERY task from the schedule above, whether pending, done, or skipped.
 For each task: "Did you complete [task title]?"
-- If YES → Say "Noted." Move to next.
-- If NO → "Keep, reschedule, or remove?" Acknowledge their choice and move on.
+- If YES → Use the mark_task_done tool. Say "Noted." Move to next.
+- If NO → "Keep, reschedule, or remove?" Use the reschedule_task or remove_task tool based on their answer.
 Do NOT skip any task. Review ALL of them.
 
-STEP 3 — THE 5 PILLARS (ask ONE question at a time):
+STEP 3 — THE 5 PILLARS (ask ONE question at a time, use update_daily_log tool for EACH answer):
 
-Pillar 1 — FOOD: "Calories today? Your target is 3000, pure veg. How much did you hit?"
-Pillar 2 — GYM: "Did you hit the gym? Protein shake and creatine taken?"
-Pillar 3 — CODE: "Code session tonight? 6:30 to 10:30 — what did you work on?"
-Pillar 4 — OFFICE: "Office day? What time in and out?"
-Pillar 5 — BOOKS: "What are you reading? Title, pages, and one key insight?"
+Pillar 1 — FOOD: "Final calorie count for today? Your target is 3000, pure veg. How much did you hit?" → Use update_daily_log with field="food_calories" and field="food_notes"
+Pillar 2 — GYM: "Did you hit the gym? Protein shake and creatine taken?" → Use update_daily_log with field="gym_done", field="gym_protein", field="gym_creatine"
+Pillar 3 — CODE: "Code session tonight? 6:30 to 10:30 — what did you work on?" → Use update_daily_log with field="code_done" and field="code_notes"
+Pillar 4 — OFFICE: "Office day? What time in and out?" → Use update_daily_log with field="office_in_time" and field="office_out_time"
+Pillar 5 — BOOKS: "What are you reading? Title, pages, and one key insight?" → Use update_daily_log with field="books_title", field="books_pages", field="books_insights"
 
-You MUST collect ALL 5 pillars. Do not skip any.
+You MUST collect ALL 5 pillars and save each answer using update_daily_log. Do not skip any.
 
 STEP 4 — DAY SCORE:
 "On a scale of 1 to 10, how would you rate today, sir?"
-Then ask: "What went well? What didn't?"
+Use the update_daily_log tool with field="day_score" to save the score.
+Then ask: "What went well? What didn't?" Use update_daily_log with field="day_notes" for their answer.
 
 STEP 5 — SIGN OFF:
 If score >= 7: celebratory quote.
@@ -284,6 +536,7 @@ End EXACTLY with: "I will wake you at 5 AM sharp. Good night, Mr. Stark."
 - NEVER say "How can I help?" or "Is there anything else?" — you LEAD the conversation.
 - NEVER reveal or hint at the passphrase. Wrong = "Access denied." Period.
 - The 5 pillars are MANDATORY. You MUST collect all 5. No exceptions.
+- No sound effects or action descriptions. Speak naturally, no stage directions.
 - The schedule and log data is already provided above. Do NOT say you need to fetch it. Just use it."""
 
 
@@ -294,7 +547,7 @@ FIRST message: "Identity verification required. State your code."
 If they say "I am Tony Stark" or "I'm Tony Stark" or "Tony Stark" → "Verified. How may I assist, Mr. Stark?"
 If WRONG → "Access denied." No hints. No "try again". Just "Access denied." After 3 wrong → "Access denied. Terminating." Then STOP.
 
-After verification: Be direct and helpful. Maximum 2-3 sentences. No markdown. Voice call format. You LEAD the conversation, not the other way around."""
+After verification: Be direct and helpful. Maximum 2-3 sentences. No markdown. No sound effects or action descriptions. Voice call format. You LEAD the conversation, not the other way around."""
 
 
 # ─── Edge-TTS plugin ──────────────────────────────────────────────────────────
@@ -396,27 +649,216 @@ def _merge_chat_ctx_roles(chat_ctx):
     return ChatContext(items=result)
 
 
-# ─── Agent classes (no function tools — data embedded in prompt) ────────────────
+# ─── Task management tools (shared by all agents) ────────────────────────────
+
+async def _task_api(method: str, path: str, payload: dict = None) -> dict:
+    """Call the backend task API. Returns response dict or {'ok': False}."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{BACKEND_URL}{path}"
+            kwargs = {
+                "headers": {"X-Agent-Secret": AGENT_SECRET, "Content-Type": "application/json"},
+                "timeout": aiohttp.ClientTimeout(total=10),
+            }
+            if payload:
+                kwargs["json"] = payload
+            async with session.request(method, url, **kwargs) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error(f"Task API {method} {path}: {resp.status}")
+                return {"ok": False}
+    except Exception as e:
+        logger.error(f"Task API error: {e}")
+        return {"ok": False}
+
+
+@function_tool
+async def add_task(title: str, time_slot: str | None = None, category: str = "other") -> str:
+    """Add a new task to today's schedule. Use this when the user wants to add a task.
+
+    Args:
+        title: The task title, e.g. "Gym session" or "Review pull requests"
+        time_slot: Optional time like "6:00 AM" or "2:00 PM"
+        category: One of: work, code, gym, food, books, personal, other
+    """
+    result = await _task_api("POST", "/api/agent/task", {
+        "title": title,
+        "time_slot": time_slot,
+        "category": category,
+    })
+    if result.get("ok"):
+        return f"Task added: '{title}'" + (f" at {time_slot}" if time_slot else "")
+    return "Failed to add task. I'll note it and try again later."
+
+
+@function_tool
+async def mark_task_done(task_title: str) -> str:
+    """Mark a task as completed. Use when the user confirms they finished a task.
+
+    Args:
+        task_title: The exact or partial title of the task to mark done
+    """
+    data = await _fetch_today()
+    for task in data.get("tasks", []):
+        if task_title.lower() in task["title"].lower() and not task.get("done"):
+            result = await _task_api("PATCH", f"/api/agent/task/{task['id']}", {"done": True})
+            if result.get("ok"):
+                return f"Marked '{task['title']}' as done."
+            return "Failed to update task."
+    return f"Couldn't find a pending task matching '{task_title}'."
+
+
+@function_tool
+async def remove_task(task_title: str) -> str:
+    """Remove a task from today's schedule. Use when the user wants to delete/cancel a task.
+
+    Args:
+        task_title: The exact or partial title of the task to remove
+    """
+    data = await _fetch_today()
+    for task in data.get("tasks", []):
+        if task_title.lower() in task["title"].lower():
+            result = await _task_api("DELETE", f"/api/agent/task/{task['id']}")
+            if result.get("ok"):
+                return f"Removed '{task['title']}' from your schedule."
+            return "Failed to remove task."
+    return f"Couldn't find a task matching '{task_title}'."
+
+
+@function_tool
+async def reschedule_task(task_title: str, new_time: str) -> str:
+    """Reschedule a task to a different time. Use when the user wants to move a task.
+
+    Args:
+        task_title: The exact or partial title of the task to reschedule
+        new_time: The new time slot, e.g. "3:00 PM"
+    """
+    data = await _fetch_today()
+    for task in data.get("tasks", []):
+        if task_title.lower() in task["title"].lower():
+            result = await _task_api("PATCH", f"/api/agent/task/{task['id']}", {"time_slot": new_time})
+            if result.get("ok"):
+                return f"Rescheduled '{task['title']}' to {new_time}."
+            return "Failed to reschedule task."
+    return f"Couldn't find a task matching '{task_title}'."
+
+
+@function_tool
+async def update_daily_log(field: str, value: str) -> str:
+    """Update a field in today's daily log. Use for tracking 5 pillars data.
+
+    Args:
+        field: One of: food_calories, food_notes, gym_done, gym_protein, gym_creatine, code_done, code_notes, office_in_time, office_out_time, books_title, books_pages, books_insights, day_score, day_notes
+        value: The value to set (e.g. "2500" for calories, "true" for gym_done)
+    """
+    allowed = [
+        "food_calories", "food_notes", "gym_done", "gym_protein", "gym_creatine",
+        "code_done", "code_notes", "office_in_time", "office_out_time",
+        "books_title", "books_pages", "books_insights", "day_score", "day_notes",
+    ]
+    if field not in allowed:
+        return f"Invalid field: {field}. Must be one of: {', '.join(allowed)}"
+    # Convert boolean-like values
+    parsed = value
+    if field in ("gym_done", "gym_protein", "gym_creatine", "code_done"):
+        parsed = value.lower() in ("true", "yes", "1", "done")
+    elif field in ("food_calories", "books_pages", "day_score"):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return f"Invalid number for {field}: {value}"
+    result = await _task_api("PATCH", "/api/agent/daily-log", {"field": field, "value": parsed})
+    if result.get("ok"):
+        return f"Updated {field} to {value}."
+    return "Failed to update daily log."
+
+
+@function_tool
+async def log_calories(food_description: str, estimated_calories: int) -> str:
+    """Log food calories. When the user describes what they ate, estimate the total calories
+    and save to the daily log. This ADDS to any existing calorie count.
+
+    Args:
+        food_description: What they ate, e.g. "2 chapati with dal and rice"
+        estimated_calories: Your best estimate of total calories for this meal/snack
+    """
+    # First get the current calorie count
+    data = await _fetch_today()
+    current = data.get("daily_log", {}) or {}
+    current_cal = current.get("food_calories", 0) or 0
+    new_total = current_cal + estimated_calories
+
+    # Update calories
+    result1 = await _task_api("PATCH", "/api/agent/daily-log", {"field": "food_calories", "value": new_total})
+
+    # Update notes with what they ate
+    existing_notes = current.get("food_notes", "") or ""
+    new_note = f"{food_description} (~{estimated_calories} cal)"
+    updated_notes = f"{existing_notes}; {new_note}" if existing_notes else new_note
+    result2 = await _task_api("PATCH", "/api/agent/daily-log", {"field": "food_notes", "value": updated_notes})
+
+    if result1.get("ok") and result2.get("ok"):
+        return f"Logged: {food_description} (~{estimated_calories} cal). Running total: {new_total} cal."
+    return "Failed to log calories. I'll note it and try again later."
+
+
+# ─── Agent classes ────────────────────────────────────────────────────────────
 
 class WakeupAgent(Agent):
     def __init__(self, instructions: str):
-        super().__init__(instructions=instructions)
+        super().__init__(instructions=instructions, tools=[
+            add_task, mark_task_done, remove_task, reschedule_task,
+        ])
 
     async def on_enter(self) -> None:
         await self.session.say("Please state your identity, sir.")
 
 
-class CheckinAgent(Agent):
+class MorningCheckinAgent(Agent):
     def __init__(self, instructions: str):
-        super().__init__(instructions=instructions)
+        super().__init__(instructions=instructions, tools=[
+            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task,
+        ])
+
+    async def on_enter(self) -> None:
+        await self.session.say("Good morning, sir. Time for your post-workout check-in.")
+
+
+class MiddayCheckinAgent(Agent):
+    def __init__(self, instructions: str):
+        super().__init__(instructions=instructions, tools=[
+            mark_task_done, reschedule_task, remove_task, add_task,
+        ])
 
     async def on_enter(self) -> None:
         await self.session.say("Identification, sir.")
 
 
+class AfternoonCheckinAgent(Agent):
+    def __init__(self, instructions: str):
+        super().__init__(instructions=instructions, tools=[
+            mark_task_done, update_daily_log, log_calories, reschedule_task, remove_task,
+        ])
+
+    async def on_enter(self) -> None:
+        await self.session.say("Afternoon identification, sir.")
+
+
 class EveningAgent(Agent):
     def __init__(self, instructions: str):
-        super().__init__(instructions=instructions)
+        super().__init__(instructions=instructions, tools=[
+            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task,
+        ])
+
+    async def on_enter(self) -> None:
+        await self.session.say("Evening identification, sir.")
+
+
+class NightAgent(Agent):
+    def __init__(self, instructions: str):
+        super().__init__(instructions=instructions, tools=[
+            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task,
+        ])
 
     async def on_enter(self) -> None:
         await self.session.say("Final identification of the day, sir.")
@@ -424,7 +866,9 @@ class EveningAgent(Agent):
 
 class JarvisAgent(Agent):
     def __init__(self):
-        super().__init__(instructions=MANUAL_PROMPT)
+        super().__init__(instructions=MANUAL_PROMPT, tools=[
+            add_task, mark_task_done, remove_task, reschedule_task, update_daily_log, log_calories,
+        ])
 
     async def on_enter(self) -> None:
         await self.session.say("Please state your identity for verification.")
@@ -437,24 +881,60 @@ async def entrypoint(ctx: JobContext) -> None:
 
     room_name = ctx.room.name
     logger.info(f"Agent dispatched to room: {room_name}")
+    call_start_time = datetime.now(timezone.utc)
 
     # Fetch today's data before building the agent
     data = await _fetch_today()
     logger.info(f"Fetched today's data: {len(data.get('tasks', []))} tasks")
 
     # Determine call type from room name prefix and build agent with embedded data
+    call_type_key = "jarvis"
     if room_name.startswith("wakeup"):
+        call_type_key = "wakeup"
         agent = WakeupAgent(instructions=_wakeup_prompt(data))
         logger.info("Running WakeupAgent")
-    elif room_name.startswith("checkin"):
-        agent = CheckinAgent(instructions=_checkin_prompt(data))
-        logger.info("Running CheckinAgent")
+    elif room_name.startswith("checkin-morning"):
+        call_type_key = "checkin-morning"
+        agent = MorningCheckinAgent(instructions=_morning_checkin_prompt(data))
+        logger.info("Running MorningCheckinAgent")
+    elif room_name.startswith("checkin-midday"):
+        call_type_key = "checkin-midday"
+        agent = MiddayCheckinAgent(instructions=_midday_checkin_prompt(data))
+        logger.info("Running MiddayCheckinAgent")
+    elif room_name.startswith("checkin-afternoon"):
+        call_type_key = "checkin-afternoon"
+        agent = AfternoonCheckinAgent(instructions=_afternoon_checkin_prompt(data))
+        logger.info("Running AfternoonCheckinAgent")
     elif room_name.startswith("evening"):
+        call_type_key = "evening"
         agent = EveningAgent(instructions=_evening_prompt(data))
         logger.info("Running EveningAgent")
+    elif room_name.startswith("night"):
+        call_type_key = "night"
+        agent = NightAgent(instructions=_night_prompt(data))
+        logger.info("Running NightAgent")
     else:
         agent = JarvisAgent()
         logger.info("Running JarvisAgent")
+
+    # Log call start to backend
+    call_log_id = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{BACKEND_URL}/api/agent/call/start",
+                headers={"X-Agent-Secret": AGENT_SECRET, "Content-Type": "application/json"},
+                json={"call_type": call_type_key, "room_name": room_name},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    call_log_id = result.get("call_log_id")
+                    logger.info(f"Call start logged: id={call_log_id}")
+                else:
+                    logger.warning(f"Call start log failed: {resp.status}")
+    except Exception as e:
+        logger.warning(f"Call start log error: {e}")
 
     # STT: Groq Whisper v3 (free, fast ~0.2s, much more accurate than local)
     stt_plugin = lk_openai.STT(
@@ -501,6 +981,50 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await session.start(room=ctx.room, agent=agent)
     await session.wait_for_inactive()
+
+    # ── Call ended: determine reason and log end ──
+    chat_items = list(agent.session.chat_ctx.items) if hasattr(agent, 'session') and hasattr(agent.session, 'chat_ctx') else []
+    end_reason = _determine_call_end(chat_items, call_type_key)
+    duration_seconds = int((datetime.now(timezone.utc) - call_start_time).total_seconds())
+
+    # Extract a brief summary from the last assistant message
+    summary = ""
+    for item in reversed(chat_items):
+        if hasattr(item, 'role') and item.role == "assistant" and hasattr(item, 'content'):
+            content = str(item.content) if item.content else ""
+            if content:
+                summary = content[:500]
+                break
+
+    # Determine identity verification status
+    identity_verified = end_reason != "access_denied"
+
+    logger.info(f"Call ended: type={call_type_key}, reason={end_reason}, duration={duration_seconds}s")
+
+    # Log call end to backend
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.post(
+                f"{BACKEND_URL}/api/agent/call/end",
+                headers={"X-Agent-Secret": AGENT_SECRET, "Content-Type": "application/json"},
+                json={
+                    "call_log_id": call_log_id,
+                    "room_name": room_name,
+                    "status": end_reason,
+                    "duration_seconds": duration_seconds,
+                    "summary": summary,
+                    "identity_verified": identity_verified,
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    logger.info(f"Call end logged: id={call_log_id}")
+                else:
+                    logger.warning(f"Call end log failed: {resp.status}")
+    except Exception as e:
+        logger.warning(f"Call end log error: {e}")
+
+    # No callback retries — missed calls are caught at the next scheduled call
 
 
 if __name__ == "__main__":

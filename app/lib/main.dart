@@ -26,10 +26,12 @@ void main() async {
       final data       = Map<String, dynamic>.from(call.arguments as Map);
       final autoAnswer = data['action'] == 'answer';
       final roomName   = data['room_name'] as String? ?? '';
+      final callType   = data['call_type'] as String?;
       navigatorKey.currentState?.pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => CallScreen(
           autoAnswer: autoAnswer,
           roomName: roomName.isNotEmpty ? roomName : null,
+          callType: callType,
         )),
         (_) => false,
       );
@@ -39,6 +41,7 @@ void main() async {
   bool launchCall = false;
   bool autoAnswer = false;
   String? roomName;
+  String? callType;
 
   try {
     final fcmData = await const MethodChannel('jarvis_fcm')
@@ -48,19 +51,21 @@ void main() async {
       autoAnswer = fcmData?['action'] == 'answer';
       final rn = fcmData?['room_name'] as String? ?? '';
       roomName = rn.isNotEmpty ? rn : null;
+      callType = fcmData?['call_type'] as String?;
       const MethodChannel('jarvis_fcm')
           .invokeMethod('startCallRingtone', {'caller': 'Jarvis'});
     }
   } catch (_) {}
 
-  runApp(JarvisApp(launchFromCall: launchCall, autoAnswer: autoAnswer, roomName: roomName));
+  runApp(JarvisApp(launchFromCall: launchCall, autoAnswer: autoAnswer, roomName: roomName, callType: callType));
 }
 
 class JarvisApp extends StatelessWidget {
   final bool launchFromCall;
   final bool autoAnswer;
   final String? roomName;
-  const JarvisApp({super.key, this.launchFromCall = false, this.autoAnswer = false, this.roomName});
+  final String? callType;
+  const JarvisApp({super.key, this.launchFromCall = false, this.autoAnswer = false, this.roomName, this.callType});
 
   @override
   Widget build(BuildContext context) {
@@ -77,7 +82,7 @@ class JarvisApp extends StatelessWidget {
         ),
       ),
       home: launchFromCall
-          ? CallScreen(autoAnswer: autoAnswer, roomName: roomName)
+          ? CallScreen(autoAnswer: autoAnswer, roomName: roomName, callType: callType)
           : const ShellScreen(),
     );
   }

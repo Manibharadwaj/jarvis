@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart';
 import '../config.dart';
+import '../utils/call_types.dart';
 
 enum CallState {
   ringing,
@@ -20,7 +21,8 @@ enum CallState {
 class CallScreen extends StatefulWidget {
   final bool autoAnswer;
   final String? roomName;
-  const CallScreen({super.key, this.autoAnswer = false, this.roomName});
+  final String? callType;
+  const CallScreen({super.key, this.autoAnswer = false, this.roomName, this.callType});
 
   @override
   State<CallScreen> createState() => _CallScreenState();
@@ -36,6 +38,9 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
   late AnimationController _reactorCtrl;
+
+  static const _audioChannel = MethodChannel('jarvis_audio_route');
+  bool _isSpeakerOn = true;
 
   @override
   void initState() {
@@ -70,12 +75,21 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     _reactorCtrl.dispose();
     _listener?.dispose();
     _room?.disconnect();
+    // Reset speaker to earpiece default
+    try { _audioChannel.invokeMethod('setSpeaker', false); } catch (_) {}
     super.dispose();
   }
 
   void _stopRingtone() {
     const MethodChannel('jarvis_fcm').invokeMethod('stopCallRingtone');
   }
+
+  void _toggleSpeaker() {
+    setState(() => _isSpeakerOn = !_isSpeakerOn);
+    _audioChannel.invokeMethod('setSpeaker', _isSpeakerOn);
+  }
+
+  String _callTypeLabel(String type) => callTypeLabel(type);
 
   Future<void> _answer() async {
     _stopRingtone();
@@ -123,6 +137,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
             _state = CallState.connected;
             _statusDetail = 'Waiting for J.A.R.V.I.S...';
           });
+          // Enable speaker mode by default when call connects
+          _audioChannel.invokeMethod('setSpeaker', _isSpeakerOn);
         })
         ..on<ParticipantConnectedEvent>((e) {
           // Agent joined — Jarvis is ready
@@ -252,7 +268,33 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     final isMissed = _state == CallState.missed;
     final isConnecting = _state == CallState.connecting;
 
-    return Scaffold(
+    return PopScope(
+      canPop: !_inCall,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop && _inCall) {
+          final result = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: const Color(0xFF1A1A2E),
+              title: const Text('End Call?', style: TextStyle(color: Colors.white)),
+              content: const Text('Are you sure you want to end the call with J.A.R.V.I.S.?',
+                  style: TextStyle(color: Colors.white70)),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('End Call', style: TextStyle(color: Colors.redAccent)),
+                ),
+              ],
+            ),
+          );
+          if (result == true) _hangUp();
+        }
+      },
+      child: Scaffold(
       body: Container(
         width: double.infinity,
         height: double.infinity,
@@ -282,6 +324,20 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                 ),
 
               const SizedBox(height: 24),
+
+              if (widget.callType != null && widget.callType!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    _callTypeLabel(widget.callType!),
+                    style: TextStyle(
+                      fontSize: 12,
+                      letterSpacing: 3,
+                      color: _statusColor.withValues(alpha: 0.7),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
 
               ShaderMask(
                 shaderCallback: (b) => LinearGradient(
@@ -455,12 +511,25 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
               if (_inCall)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 60),
-                  child: _CallButton(
-                    icon: Icons.call_end,
-                    color: Colors.redAccent,
-                    glowColor: Colors.redAccent,
-                    onTap: _hangUp,
-                    size: 72,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _CallButton(
+                        icon: _isSpeakerOn ? Icons.volume_up : Icons.volume_down,
+                        color: _isSpeakerOn ? const Color(0xFF00E5FF) : Colors.grey[700]!,
+                        glowColor: _isSpeakerOn ? const Color(0xFF00E5FF) : Colors.grey,
+                        onTap: _toggleSpeaker,
+                        size: 56,
+                      ),
+                      const SizedBox(width: 40),
+                      _CallButton(
+                        icon: Icons.call_end,
+                        color: Colors.redAccent,
+                        glowColor: Colors.redAccent,
+                        onTap: _hangUp,
+                        size: 72,
+                      ),
+                    ],
                   ),
                 ),
 
@@ -482,6 +551,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
           ),
         ),
       ),
+    ),
     );
   }
 }
