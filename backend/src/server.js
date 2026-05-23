@@ -231,14 +231,12 @@ app.post('/api/register-token', (req, res) => {
 
 app.post('/api/call/push', async (req, res) => {
   try {
-    const tokens = Array.from(deviceTokens);
-    if (tokens.length === 0) return res.status(400).json({ error: 'No devices registered' });
-    const result = await admin.messaging().sendEachForMulticast({
-      tokens,
-      data: { type: 'incoming_call', caller: 'Jarvis' },
-      android: { priority: 'high', ttl: 86400 },
-    });
-    res.json({ ok: true, sent: result.successCount });
+    const callType = req.body.call_type || req.query.call_type || 'wakeup';
+    const roomName = req.body.room_name || req.query.room_name || '';
+    // If no room provided, create one for this call type
+    const finalRoomName = roomName || (await createScheduledRoom(callType));
+    await pushCall(finalRoomName, callType);
+    res.json({ ok: true, room: finalRoomName, call_type: callType });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

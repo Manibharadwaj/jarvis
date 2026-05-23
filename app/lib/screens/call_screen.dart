@@ -111,10 +111,15 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
             )
             .timeout(const Duration(seconds: 15));
       } else {
+        final startBody = <String, dynamic>{};
+        if (widget.callType != null && widget.callType!.isNotEmpty) {
+          startBody['call_type'] = widget.callType;
+        }
         resp = await http
             .post(
               Uri.parse('$serverUrl/api/voice/start'),
               headers: {'Content-Type': 'application/json'},
+              body: startBody.isNotEmpty ? jsonEncode(startBody) : null,
             )
             .timeout(const Duration(seconds: 15));
       }

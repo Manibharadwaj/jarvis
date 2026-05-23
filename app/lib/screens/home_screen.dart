@@ -206,7 +206,7 @@ class _HomeScreenState extends State<HomeScreen>
                     Navigator.push(
                       context,
                       PageRouteBuilder(
-                        pageBuilder: (_, __, ___) => const CallScreen(),
+                        pageBuilder: (_, __, ___) => const CallScreen(callType: 'jarvis'),
                         transitionsBuilder: (_, a, __, child) =>
                             FadeTransition(opacity: a, child: child),
                         transitionDuration: const Duration(milliseconds: 500),
