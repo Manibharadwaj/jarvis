@@ -13,6 +13,9 @@ import { readFileSync, writeFileSync } from 'fs';
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import pg from 'pg';
 import cron from 'node-cron';
+import { getPromptForCallType, getInitialMessage } from './prompts.js';
+import { getToolsForCallType } from './tools.js';
+import { runAgentLoop, determineCallEnd } from './agent-loop.js';
 
 const { Pool } = pg;
 
@@ -525,7 +528,7 @@ app.get('/api/calls/history', async (req, res) => {
 
     const result = await pool.query(
       `SELECT id, call_type, room_name, started_at, ended_at, duration_seconds,
-              status, summary, mood, identity_verified
+              status, summary, mood, identity_verified, medium
        FROM public.call_logs
        WHERE user_id = $1
        ORDER BY started_at DESC
@@ -663,6 +666,316 @@ app.post('/api/test/call', async (req, res) => {
     await pushCall(roomName, type);
     res.json({ ok: true, roomName });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Shared: fetch today's data (tasks + daily log, with auto-seed) ──────────────
+
+async function fetchTodayData() {
+  const userId = await getUserId();
+  if (!userId) return null;
+
+  const today = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date";
+
+  // Auto-seed if no tasks for today
+  const countResult = await pool.query(
+    `SELECT COUNT(*) as cnt FROM public.master_schedule
+     WHERE user_id = $1 AND date = ${today}`,
+    [userId]
+  );
+  if (parseInt(countResult.rows[0].cnt) === 0) {
+    const dayName = "(TO_CHAR(NOW() AT TIME ZONE 'Asia/Kolkata', 'dy'))";
+    await pool.query(
+      `INSERT INTO public.master_schedule (user_id, date, title, time_slot, category)
+       SELECT $1, ${today}, title, target_time::text, category
+       FROM public.daily_tasks
+       WHERE user_id = $1 AND default_daily = true AND active = true
+         AND (
+           day_filter IS NULL
+           OR (day_filter = 'weekday' AND ${dayName} != 'sun')
+           OR (day_filter = 'sunday' AND ${dayName} = 'sun')
+           OR day_filter = ${dayName}
+         )
+       ON CONFLICT DO NOTHING`,
+      [userId]
+    );
+  }
+
+  const [tasksResult, logResult] = await Promise.all([
+    pool.query(
+      `SELECT id, title, time_slot, category, done, skipped, skip_reason, rescheduled_to
+       FROM public.master_schedule
+       WHERE user_id = $1 AND date = ${today}
+       ORDER BY time_slot NULLS LAST, created_at`,
+      [userId]
+    ),
+    pool.query(
+      `SELECT food_calories, food_target, food_notes, gym_done, gym_protein, gym_creatine,
+              code_done, code_start_time, code_end_time, code_notes,
+              office_in_time, office_out_time,
+              books_title, books_pages, books_insights, day_score, day_notes,
+              hydration_glasses
+       FROM public.daily_log
+       WHERE user_id = $1 AND date = ${today}`,
+      [userId]
+    ),
+  ]);
+
+  return {
+    userId,
+    date: new Date().toISOString().split('T')[0],
+    tasks: tasksResult.rows,
+    daily_log: logResult.rows[0] || null,
+  };
+}
+
+// ── Chat API (text-based agent interaction) ────────────────────────────────────
+
+// Load chat history from call_transcripts, reconstructed into LLM message format
+async function loadChatHistory(callLogId) {
+  const { rows } = await pool.query(
+    `SELECT role, content, tool_call_id, tool_name FROM public.call_transcripts
+     WHERE call_log_id = $1 ORDER BY created_at`,
+    [callLogId]
+  );
+  const messages = [];
+  let pendingToolCalls = null;
+
+  for (const row of rows) {
+    if (row.role === 'assistant' && pendingToolCalls) {
+      // Flush the previous assistant message with its tool_calls
+      messages.push(pendingToolCalls);
+      pendingToolCalls = null;
+    }
+
+    if (row.role === 'user') {
+      messages.push({ role: 'user', content: row.content });
+    } else if (row.role === 'assistant') {
+      // Might have tool_calls following — for now store as plain
+      // If this is a standalone assistant message, push directly
+      // If tool_calls come later, we'll reconstruct
+      pendingToolCalls = { role: 'assistant', content: row.content, tool_calls: [] };
+    } else if (row.role === 'tool' && pendingToolCalls) {
+      pendingToolCalls.tool_calls.push({
+        id: row.tool_call_id,
+        function: { name: row.tool_name, arguments: '{}' },
+      });
+      messages.push({
+        role: 'tool',
+        tool_call_id: row.tool_call_id,
+        content: row.content,
+      });
+    }
+  }
+  // Flush remaining
+  if (pendingToolCalls) {
+    if (pendingToolCalls.tool_calls.length > 0) {
+      messages.push(pendingToolCalls);
+    } else {
+      messages.push({ role: 'assistant', content: pendingToolCalls.content });
+    }
+  }
+
+  return messages;
+}
+
+// POST /api/chat/start — start a new text chat session
+app.post('/api/chat/start', async (req, res) => {
+  try {
+    const { call_type, room_name } = req.body;
+    const data = await fetchTodayData();
+    if (!data) return res.status(404).json({ error: 'No user found' });
+
+    // Create call_logs entry with medium = 'text'
+    const logResult = await pool.query(
+      `INSERT INTO public.call_logs (user_id, call_type, room_name, status, started_at, medium)
+       VALUES ($1, $2, $3, 'connected', NOW(), 'text')
+       RETURNING id`,
+      [data.userId, call_type || 'jarvis', room_name || null]
+    );
+    const sessionId = logResult.rows[0].id;
+
+    // Mark call_queue as answered if room_name provided
+    if (room_name) {
+      pool.query(
+        `UPDATE public.call_queue SET status = 'answered', answered_at = NOW() WHERE room_name = $1`,
+        [room_name]
+      ).catch(e => console.error('call_queue update failed:', e.message));
+    }
+
+    // Get initial message from agent
+    const initialMessage = getInitialMessage(call_type || 'jarvis');
+
+    // Store initial assistant message in transcripts
+    await pool.query(
+      `INSERT INTO public.call_transcripts (call_log_id, role, content) VALUES ($1, 'assistant', $2)`,
+      [sessionId, initialMessage]
+    );
+
+    res.json({ session_id: sessionId, message: initialMessage, call_type: call_type || 'jarvis' });
+  } catch (err) {
+    console.error('/api/chat/start:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/chat/message — send a user message and get agent response
+app.post('/api/chat/message', async (req, res) => {
+  try {
+    const { session_id, message } = req.body;
+    if (!session_id || !message) return res.status(400).json({ error: 'session_id and message required' });
+
+    // Store user message
+    await pool.query(
+      `INSERT INTO public.call_transcripts (call_log_id, role, content) VALUES ($1, 'user', $2)`,
+      [session_id, message]
+    );
+
+    // Get call_log info
+    const logResult = await pool.query(
+      `SELECT call_type, started_at FROM public.call_logs WHERE id = $1`,
+      [session_id]
+    );
+    if (logResult.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
+    const callType = logResult.rows[0].call_type || 'jarvis';
+
+    // Fetch fresh today data (tools may have updated it)
+    const data = await fetchTodayData();
+    if (!data) return res.status(404).json({ error: 'No user found' });
+
+    // Load conversation history
+    const history = await loadChatHistory(session_id);
+
+    // Build system prompt and tools
+    const systemPrompt = getPromptForCallType(callType, data);
+    const tools = getToolsForCallType(callType);
+
+    // Run agent loop
+    const { content, allMessages } = await runAgentLoop({
+      systemPrompt,
+      messages: history,
+      tools,
+      pool,
+      userId: data.userId,
+    });
+
+    // Store new messages in transcripts (skip user message — already stored)
+    for (const msg of allMessages) {
+      if (msg.role === 'assistant') {
+        await pool.query(
+          `INSERT INTO public.call_transcripts (call_log_id, role, content) VALUES ($1, 'assistant', $2)`,
+          [session_id, msg.content || '']
+        );
+        // If this assistant message had tool_calls, store those too
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
+            // The tool result is in a subsequent 'tool' message — we'll store tool_name metadata
+            // We need to find the matching tool result in allMessages
+            const toolResult = allMessages.find(m => m.role === 'tool' && m.tool_call_id === tc.id);
+            if (toolResult) {
+              await pool.query(
+                `INSERT INTO public.call_transcripts (call_log_id, role, content, tool_call_id, tool_name)
+                 VALUES ($1, 'tool', $2, $3, $4)`,
+                [session_id, toolResult.content, tc.id, tc.function.name]
+              );
+            }
+          }
+        }
+      }
+      // tool messages are stored above alongside their assistant parent
+    }
+
+    // Check if conversation ended
+    const allHistory = await loadChatHistory(session_id);
+    const endReason = determineCallEnd(allHistory);
+    let isEnded = false;
+
+    if (endReason === 'completed' || endReason === 'access_denied') {
+      isEnded = true;
+      // End the session
+      const startedAt = logResult.rows[0].started_at;
+      const durationSeconds = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+      const statusMap = { completed: 'ended', access_denied: 'access_denied', disconnected: 'disconnected' };
+      const dbStatus = statusMap[endReason] || 'ended';
+      const identityVerified = endReason !== 'access_denied';
+
+      // Extract summary from last assistant message
+      const summary = content.slice(0, 500);
+
+      await pool.query(
+        `UPDATE public.call_logs
+         SET ended_at = NOW(), duration_seconds = $2, status = $3, summary = $4, identity_verified = $5
+         WHERE id = $1`,
+        [session_id, durationSeconds, dbStatus, summary, identityVerified]
+      );
+    }
+
+    res.json({ response: content, is_ended: isEnded, end_reason: isEnded ? endReason : undefined });
+  } catch (err) {
+    console.error('/api/chat/message:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/chat/end — manually end a chat session
+app.post('/api/chat/end', async (req, res) => {
+  try {
+    const { session_id } = req.body;
+    if (!session_id) return res.status(400).json({ error: 'session_id required' });
+
+    const logResult = await pool.query(
+      `SELECT started_at FROM public.call_logs WHERE id = $1`,
+      [session_id]
+    );
+    if (logResult.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
+
+    const history = await loadChatHistory(session_id);
+    const endReason = determineCallEnd(history);
+    const startedAt = logResult.rows[0].started_at;
+    const durationSeconds = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+    const statusMap = { completed: 'ended', access_denied: 'access_denied', disconnected: 'disconnected' };
+    const dbStatus = statusMap[endReason] || 'ended';
+    const identityVerified = endReason !== 'access_denied';
+
+    // Get last assistant message for summary
+    let summary = '';
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'assistant') {
+        summary = (history[i].content || '').slice(0, 500);
+        break;
+      }
+    }
+
+    await pool.query(
+      `UPDATE public.call_logs
+       SET ended_at = NOW(), duration_seconds = $2, status = $3, summary = $4, identity_verified = $5
+       WHERE id = $1`,
+      [session_id, durationSeconds, dbStatus, summary, identityVerified]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('/api/chat/end:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/chat/history/:sessionId — get chat transcript
+app.get('/api/chat/history/:sessionId', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT role, content, created_at, tool_name FROM public.call_transcripts
+       WHERE call_log_id = $1 ORDER BY created_at`,
+      [req.params.sessionId]
+    );
+    // Only return user and assistant messages (not tool internals)
+    const messages = rows
+      .filter(r => r.role === 'user' || r.role === 'assistant')
+      .map(r => ({ role: r.role, content: r.content, created_at: r.created_at }));
+    res.json({ messages });
+  } catch (err) {
+    console.error('/api/chat/history:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

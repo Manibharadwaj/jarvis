@@ -202,6 +202,10 @@ class _CallCard extends StatelessWidget {
                       const SizedBox(width: 4),
                       const Icon(Icons.verified, size: 14, color: Color(0xFF00E5FF)),
                     ],
+                    if (call['medium'] == 'text') ...[
+                      const SizedBox(width: 4),
+                      const Icon(Icons.chat_bubble, size: 14, color: Color(0xFF00E5FF)),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 4),
@@ -240,12 +244,13 @@ class _CallCard extends StatelessWidget {
   }
 
   String _statusLabel(String? status) {
+    final isText = call['medium'] == 'text';
     switch (status) {
-      case 'completed': return 'DONE';
+      case 'completed': return isText ? 'CHAT' : 'DONE';
       case 'access_denied': return 'DENIED';
       case 'disconnected': return 'CUT';
       case 'missed': return 'MISSED';
-      case 'connected': return 'LIVE';
+      case 'connected': return isText ? 'LIVE' : 'LIVE';
       default: return (status ?? 'UNKNOWN').toUpperCase();
     }
   }

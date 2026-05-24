@@ -7,6 +7,7 @@ import 'package:livekit_client/livekit_client.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../config.dart';
 import '../utils/call_types.dart';
+import 'chat_screen.dart';
 
 enum CallState {
   ringing,
@@ -115,6 +116,17 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   }
 
   String _callTypeLabel(String type) => callTypeLabel(type);
+
+  void _startChat() {
+    _stopRingtone();
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(callType: widget.callType, roomName: widget.roomName),
+      ),
+    );
+  }
 
   Future<void> _answer() async {
     _stopRingtone();
@@ -514,7 +526,15 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
                         glowColor: Colors.redAccent,
                         onTap: _decline,
                       ),
-                      const SizedBox(width: 80),
+                      const SizedBox(width: 28),
+                      _CallButton(
+                        icon: Icons.chat_bubble_outline,
+                        color: const Color(0xFF00E5FF),
+                        glowColor: const Color(0xFF00E5FF),
+                        size: 56,
+                        onTap: _startChat,
+                      ),
+                      const SizedBox(width: 28),
                       _CallButton(
                         icon: Icons.phone,
                         color: const Color(0xFF00FF88),

@@ -87,6 +87,66 @@ class ApiService {
     }
   }
 
+  // Start a text chat session
+  static Future<Map<String, dynamic>?> startChatSession(String callType, {String? roomName}) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$_baseUrl/api/chat/start'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'call_type': callType, if (roomName != null) 'room_name': roomName}),
+      ).timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) return jsonDecode(resp.body);
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Send a message in a chat session
+  static Future<Map<String, dynamic>?> sendChatMessage(String sessionId, String message) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$_baseUrl/api/chat/message'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'session_id': sessionId, 'message': message}),
+      ).timeout(const Duration(seconds: 60));
+      if (resp.statusCode == 200) return jsonDecode(resp.body);
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // End a chat session
+  static Future<bool> endChatSession(String sessionId) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$_baseUrl/api/chat/end'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'session_id': sessionId}),
+      ).timeout(const Duration(seconds: 10));
+      return resp.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Get chat transcript for a session
+  static Future<List<Map<String, dynamic>>> getChatHistory(String sessionId) async {
+    try {
+      final resp = await http.get(
+        Uri.parse('$_baseUrl/api/chat/history/$sessionId'),
+      ).timeout(const Duration(seconds: 10));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        return List<Map<String, dynamic>>.from(data['messages'] ?? []);
+      }
+      return [];
+    } catch (_) {
+      return [];
+    }
+  }
+
   // Update a task from the app
   static Future<bool> updateTask(String id, Map<String, dynamic> updates) async {
     try {

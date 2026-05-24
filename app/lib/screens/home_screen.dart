@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import '../config.dart';
 import 'call_screen.dart';
+import 'chat_screen.dart';
 import '../services/api_service.dart';
 import '../utils/call_types.dart';
 import '../widgets/verify_dialog.dart';
@@ -243,6 +244,38 @@ class _HomeScreenState extends State<HomeScreen>
                 style: TextStyle(
                   fontSize: 12, letterSpacing: 3,
                   color: Colors.cyanAccent.withValues(alpha: 0.4),
+                ),
+              ),
+              const SizedBox(height: 20),
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ChatScreen(callType: 'jarvis')),
+                  );
+                },
+                child: Container(
+                  width: 56, height: 56,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                    border: Border.all(color: const Color(0xFF00E5FF), width: 0.8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.2),
+                        blurRadius: 12, spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.chat_bubble_outline, size: 24, color: Color(0xFF00E5FF)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'OR CHAT',
+                style: TextStyle(
+                  fontSize: 10, letterSpacing: 3,
+                  color: Colors.cyanAccent.withValues(alpha: 0.3),
                 ),
               ),
               if (_tasksTotal > 0 || _lastCallStatus.isNotEmpty) ...[
