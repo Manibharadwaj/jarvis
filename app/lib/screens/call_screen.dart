@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../config.dart';
 import '../utils/call_types.dart';
 
@@ -42,6 +43,9 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   static const _audioChannel = MethodChannel('jarvis_audio_route');
   bool _isSpeakerOn = true;
 
+  final AudioPlayer _beepPlayer = AudioPlayer();
+  bool _beepPlaying = false;
+
   @override
   void initState() {
     super.initState();
@@ -75,6 +79,8 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     _reactorCtrl.dispose();
     _listener?.dispose();
     _room?.disconnect();
+    _stopThinkingBeep();
+    _beepPlayer.dispose();
     // Reset speaker to earpiece default
     try { _audioChannel.invokeMethod('setSpeaker', false); } catch (_) {}
     super.dispose();
@@ -87,6 +93,25 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
   void _toggleSpeaker() {
     setState(() => _isSpeakerOn = !_isSpeakerOn);
     _audioChannel.invokeMethod('setSpeaker', _isSpeakerOn);
+  }
+
+  Future<void> _startThinkingBeep() async {
+    if (_beepPlaying) return;
+    _beepPlaying = true;
+    try {
+      await _beepPlayer.setAsset('assets/beep.wav');
+      await _beepPlayer.setVolume(0.3);
+      await _beepPlayer.setReleaseMode(ReleaseMode.loop);
+      await _beepPlayer.resume();
+    } catch (_) {
+      _beepPlaying = false;
+    }
+  }
+
+  void _stopThinkingBeep() {
+    if (!_beepPlaying) return;
+    _beepPlaying = false;
+    try { _beepPlayer.stop(); } catch (_) {}
   }
 
   String _callTypeLabel(String type) => callTypeLabel(type);
@@ -161,16 +186,21 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
               speakers.any((p) => p.identity == 'stark');
 
           if (agentSpeaking) {
+            _stopThinkingBeep();
             setState(() => _state = CallState.agentSpeaking);
           } else if (userSpeaking) {
+            _stopThinkingBeep();
             setState(() => _state = CallState.userSpeaking);
           } else if (_state == CallState.agentSpeaking ||
               _state == CallState.userSpeaking) {
+            // Nobody speaking = agent is processing, play thinking beep
+            _startThinkingBeep();
             setState(() => _state = CallState.connected);
           }
         })
         ..on<RoomDisconnectedEvent>((_) {
           if (!mounted) return;
+          _stopThinkingBeep();
           setState(() => _state = CallState.ended);
           Future.delayed(const Duration(seconds: 2), () {
             if (mounted) Navigator.pop(context);
@@ -231,7 +261,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
       case CallState.connecting:
         return _statusDetail.isNotEmpty ? _statusDetail : 'Connecting...';
       case CallState.connected:
-        return _statusDetail.isNotEmpty ? _statusDetail : 'Connected';
+        return _statusDetail.isNotEmpty ? _statusDetail : 'Thinking...';
       case CallState.agentSpeaking:
         return 'J.A.R.V.I.S. Speaking';
       case CallState.userSpeaking:

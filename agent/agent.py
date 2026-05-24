@@ -146,18 +146,48 @@ def _format_tasks(tasks: list, only_pending: bool = False) -> str:
 
 
 def _format_daily_log(log: dict) -> str:
-    """Format daily log for inclusion in prompt."""
+    """Format daily log for inclusion in prompt.
+    NULL = not yet asked, false = explicitly no, true = yes."""
     if not log:
         return "No daily log entries yet."
     lines = []
-    if log.get("food_calories"):
-        lines.append(f"Food: {log['food_calories']} cal")
+    food_cal = log.get("food_calories") or 0
+    food_tgt = log.get("food_target") or 3000
+    if food_cal > 0:
+        remaining = max(0, food_tgt - food_cal)
+        if remaining > 0:
+            lines.append(f"Food: {food_cal}/{food_tgt} cal — {remaining} remaining")
+        else:
+            lines.append(f"Food: {food_cal}/{food_tgt} cal — TARGET MET")
     if log.get("food_notes"):
         lines.append(f"Food notes: {log['food_notes']}")
-    if log.get("gym_done") is not None:
-        lines.append(f"Gym: {'Done' if log['gym_done'] else 'Not done'}")
-    if log.get("code_done") is not None:
-        lines.append(f"Code: {'Done' if log['code_done'] else 'Not done'}")
+    hydration = log.get("hydration_glasses")
+    if hydration is not None:
+        remaining = max(0, 8 - hydration)
+        if remaining > 0:
+            lines.append(f"Hydration: {hydration}/8 glasses — {remaining} remaining")
+        else:
+            lines.append(f"Hydration: {hydration}/8 glasses — TARGET MET")
+    gym = log.get("gym_done")
+    if gym is True:
+        lines.append("Gym: Done")
+    elif gym is False:
+        lines.append("Gym: Skipped (confirmed not done)")
+    protein = log.get("gym_protein")
+    if protein is True:
+        lines.append("Protein: Taken")
+    elif protein is False:
+        lines.append("Protein: Skipped")
+    creatine = log.get("gym_creatine")
+    if creatine is True:
+        lines.append("Creatine: Taken")
+    elif creatine is False:
+        lines.append("Creatine: Skipped")
+    code = log.get("code_done")
+    if code is True:
+        lines.append("Code: Done")
+    elif code is False:
+        lines.append("Code: Skipped")
     if log.get("day_score") is not None:
         lines.append(f"Day score: {log['day_score']}/10")
     return "\n".join(lines) if lines else "No daily log entries yet."
@@ -302,15 +332,16 @@ CRITICAL: Once verified, NEVER re-ask for identity. Continue the protocol from w
 
 STEP 2 — GYM CHECK:
 "How was the workout this morning, sir? Rate the intensity 1-10."
-Then ask: "Protein shake taken?" → Use update_daily_log field="gym_protein", value="true"/"false"
-Then ask: "Creatine taken?" → Use update_daily_log field="gym_creatine", value="true"/"false"
-Use update_daily_log field="gym_done", value="true"
+- If user WENT to gym: Ask about intensity. Then: "Protein shake taken?" → Use update_daily_log field="gym_protein", value="true"/"false". "Creatine taken?" → Use update_daily_log field="gym_creatine", value="true"/"false". Use update_daily_log field="gym_done", value="true".
+- If user DID NOT go to gym: Say "Understood, sir." Use update_daily_log field="gym_done", value="false". Use update_daily_log field="gym_protein", value="false". Use update_daily_log field="gym_creatine", value="false". Then use mark_task_done or remove_task on the gym-related tasks. Move to STEP 3.
+- If today is Sunday: Instead of gym, ask "Did you play a sport this morning, sir?" Log gym_done accordingly.
 
 STEP 3 — BREAKFAST CALORIE COUNT:
 "What did you have for breakfast? List everything."
 Estimate the total calories: "That's approximately [X] calories."
 Use update_daily_log field="food_calories" with the estimated total.
 Use update_daily_log field="food_notes" with a summary like "Breakfast: [items], ~[X] cal"
+IMPORTANT: After logging, check the daily log output. If food is below 3000 cal target, say: "You're at [X] out of 3000. You need [3000-X] more calories today. Make sure you eat enough at lunch and dinner."
 
 STEP 4 — TASK REVIEW (PENDING tasks only, skip DONE/SKIPPED):
 Go through PENDING tasks only. For each: "Did you complete [task title]?"
@@ -425,6 +456,7 @@ STEP 2 — FOOD & CALORIES (lunch):
 Estimate the calories. Say: "That's approximately [X] calories. Running total for today: [Y]."
 Use update_daily_log field="food_calories" with the new total.
 Use update_daily_log field="food_notes" appending the lunch items.
+IMPORTANT: After logging, check the daily log. If food is below 3000 cal, say: "You're at [Y] out of 3000. Still [3000-Y] calories to go. Plan a solid dinner."
 
 STEP 3 — HALF-DAY REVIEW:
 "How has the first half of the day been? Rate it 1-10."
@@ -484,6 +516,7 @@ STEP 2 — DINNER & CALORIES:
 Estimate the dinner calories. Say: "That's approximately [X] calories. Running total for today: [Y]."
 Use update_daily_log field="food_calories" with the new total.
 Use update_daily_log field="food_notes" appending dinner items.
+IMPORTANT: After logging, check the daily log. If food is below 3000 cal, say: "You're at [Y] out of 3000. Still [3000-Y] remaining. Have a snack before bed if needed."
 
 STEP 3 — CODING PROGRESS:
 "How is the coding session going? What did you work on?"
@@ -547,8 +580,10 @@ STEP 3 — FILL GAPS IN DAILY LOG (check what's missing, ask ONLY what hasn't be
 Check the daily log above. Only ask about pillars that are MISSING or INCOMPLETE. Skip any that already have data.
 
 FOOD: If food_calories is missing or zero → "Final calorie count for today? Your target is 3000, pure veg. How much did you hit?" → Use update_daily_log field="food_calories" and field="food_notes"
-GYM: If gym_done is missing → "Did you hit the gym? Protein shake and creatine taken?" → Use update_daily_log field="gym_done", field="gym_protein", field="gym_creatine"
-CODE: If code_done is missing → "Code session tonight? What did you work on?" → Use update_daily_log field="code_done" and field="code_notes"
+If food_calories is below 3000 → "You hit [X] out of 3000. That's [3000-X] short of target. Note for tomorrow." → Use update_daily_log field="food_notes" appending the gap
+If food_calories >= 3000 → "Food target met. Well done."
+GYM: If gym_done is NULL or missing (not yet asked) → "Did you hit the gym? Protein shake and creatine taken?" → Use update_daily_log field="gym_done", field="gym_protein", field="gym_creatine". IMPORTANT: If gym_done already shows "Skipped (confirmed not done)", do NOT ask again. Skip to next pillar.
+CODE: If code_done is NULL or missing (not yet asked) → "Code session tonight? What did you work on?" → Use update_daily_log field="code_done" and field="code_notes". If code_done already shows "Skipped", do NOT ask again.
 OFFICE: If office_in_time is missing → "Office day? What time in and out?" → Use update_daily_log field="office_in_time" and field="office_out_time"
 BOOKS: If books_title is missing → "What are you reading? Title, pages, and one key insight?" → Use update_daily_log field="books_title", field="books_pages", field="books_insights"
 
@@ -786,13 +821,14 @@ async def update_daily_log(field: str, value: str) -> str:
     """Update a field in today's daily log. Use for tracking 5 pillars data.
 
     Args:
-        field: One of: food_calories, food_notes, gym_done, gym_protein, gym_creatine, code_done, code_notes, office_in_time, office_out_time, books_title, books_pages, books_insights, day_score, day_notes
+        field: One of: food_calories, food_target, food_notes, gym_done, gym_protein, gym_creatine, code_done, code_notes, office_in_time, office_out_time, books_title, books_pages, books_insights, day_score, day_notes, hydration_glasses
         value: The value to set (e.g. "2500" for calories, "true" for gym_done)
     """
     allowed = [
-        "food_calories", "food_notes", "gym_done", "gym_protein", "gym_creatine",
+        "food_calories", "food_target", "food_notes", "gym_done", "gym_protein", "gym_creatine",
         "code_done", "code_notes", "office_in_time", "office_out_time",
         "books_title", "books_pages", "books_insights", "day_score", "day_notes",
+        "hydration_glasses",
     ]
     if field not in allowed:
         return f"Invalid field: {field}. Must be one of: {', '.join(allowed)}"
@@ -800,7 +836,7 @@ async def update_daily_log(field: str, value: str) -> str:
     parsed = value
     if field in ("gym_done", "gym_protein", "gym_creatine", "code_done"):
         parsed = value.lower() in ("true", "yes", "1", "done")
-    elif field in ("food_calories", "books_pages", "day_score"):
+    elif field in ("food_calories", "food_target", "books_pages", "day_score", "hydration_glasses"):
         try:
             parsed = int(value)
         except ValueError:

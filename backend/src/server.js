@@ -295,7 +295,7 @@ app.get('/api/agent/today', agentAuth, async (req, res) => {
 
     const today = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date";
 
-    // Check if today has tasks; if not, seed from daily_tasks
+    // Check if today has tasks; if not, seed from daily_tasks (with day-of-week filtering)
     const countResult = await pool.query(
       `SELECT COUNT(*) as cnt FROM public.master_schedule
        WHERE user_id = $1 AND date = ${today}`,
@@ -303,11 +303,19 @@ app.get('/api/agent/today', agentAuth, async (req, res) => {
     );
     if (parseInt(countResult.rows[0].cnt) === 0) {
       console.log('[auto-seed] No tasks for today — seeding from daily_tasks');
+      // day_filter: NULL = every day, 'weekday' = Mon-Sat, 'sunday' = Sunday only
+      const dayName = "(TO_CHAR(NOW() AT TIME ZONE 'Asia/Kolkata', 'dy'))"; // 'mon','tue',...
       await pool.query(
         `INSERT INTO public.master_schedule (user_id, date, title, time_slot, category)
          SELECT $1, ${today}, title, target_time::text, category
          FROM public.daily_tasks
          WHERE user_id = $1 AND default_daily = true AND active = true
+           AND (
+             day_filter IS NULL
+             OR (day_filter = 'weekday' AND ${dayName} != 'sun')
+             OR (day_filter = 'sunday' AND ${dayName} = 'sun')
+             OR day_filter = ${dayName}
+           )
          ON CONFLICT DO NOTHING`,
         [userId]
       );
@@ -322,10 +330,11 @@ app.get('/api/agent/today', agentAuth, async (req, res) => {
         [userId]
       ),
       pool.query(
-        `SELECT food_calories, food_notes, gym_done, gym_protein, gym_creatine,
+        `SELECT food_calories, food_target, food_notes, gym_done, gym_protein, gym_creatine,
                 code_done, code_start_time, code_end_time, code_notes,
                 office_in_time, office_out_time,
-                books_title, books_pages, books_insights, day_score, day_notes
+                books_title, books_pages, books_insights, day_score, day_notes,
+                hydration_glasses
          FROM public.daily_log
          WHERE user_id = $1 AND date = ${today}`,
         [userId]
@@ -417,12 +426,13 @@ app.patch('/api/agent/daily-log', agentAuth, async (req, res) => {
     if (!userId) return res.status(404).json({ error: 'No user found' });
 
     const allowed = [
-      'food_calories', 'food_notes',
+      'food_calories', 'food_target', 'food_notes',
       'gym_done', 'gym_notes', 'gym_protein', 'gym_creatine',
       'code_done', 'code_start_time', 'code_end_time', 'code_notes',
       'office_in_time', 'office_out_time',
       'books_title', 'books_pages', 'books_insights',
       'day_score', 'day_notes',
+      'hydration_glasses',
     ];
     const { field, value } = req.body;
     if (!allowed.includes(field)) return res.status(400).json({ error: `Invalid field: ${field}` });
@@ -431,7 +441,7 @@ app.patch('/api/agent/daily-log', agentAuth, async (req, res) => {
     let parsed = value;
     if (['gym_done', 'gym_protein', 'gym_creatine', 'code_done'].includes(field)) {
       parsed = value === true || value === 'true' || value === '1';
-    } else if (['food_calories', 'books_pages', 'day_score'].includes(field)) {
+    } else if (['food_calories', 'food_target', 'books_pages', 'day_score', 'hydration_glasses'].includes(field)) {
       parsed = parseInt(value) || null;
     }
 
@@ -539,18 +549,25 @@ app.get('/api/app/today', async (req, res) => {
 
     const today = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date";
 
-    // Auto-seed if no tasks for today
+    // Auto-seed if no tasks for today (with day-of-week filtering)
     const countResult = await pool.query(
       `SELECT COUNT(*) as cnt FROM public.master_schedule
        WHERE user_id = $1 AND date = ${today}`,
       [userId]
     );
     if (parseInt(countResult.rows[0].cnt) === 0) {
+      const dayName = "(TO_CHAR(NOW() AT TIME ZONE 'Asia/Kolkata', 'dy'))";
       await pool.query(
         `INSERT INTO public.master_schedule (user_id, date, title, time_slot, category)
          SELECT $1, ${today}, title, target_time::text, category
          FROM public.daily_tasks
          WHERE user_id = $1 AND default_daily = true AND active = true
+           AND (
+             day_filter IS NULL
+             OR (day_filter = 'weekday' AND ${dayName} != 'sun')
+             OR (day_filter = 'sunday' AND ${dayName} = 'sun')
+             OR day_filter = ${dayName}
+           )
          ON CONFLICT DO NOTHING`,
         [userId]
       );
@@ -565,10 +582,11 @@ app.get('/api/app/today', async (req, res) => {
         [userId]
       ),
       pool.query(
-        `SELECT food_calories, food_notes, gym_done, gym_protein, gym_creatine,
+        `SELECT food_calories, food_target, food_notes, gym_done, gym_protein, gym_creatine,
                 code_done, code_start_time, code_end_time, code_notes,
                 office_in_time, office_out_time,
-                books_title, books_pages, books_insights, day_score, day_notes
+                books_title, books_pages, books_insights, day_score, day_notes,
+                hydration_glasses
          FROM public.daily_log
          WHERE user_id = $1 AND date = ${today}`,
         [userId]
