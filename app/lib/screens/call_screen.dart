@@ -100,7 +100,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     if (_beepPlaying) return;
     _beepPlaying = true;
     try {
-      await _beepPlayer.setAsset('assets/beep.wav');
+      await _beepPlayer.setSourceAsset('beep.wav');
       await _beepPlayer.setVolume(0.3);
       await _beepPlayer.setReleaseMode(ReleaseMode.loop);
       await _beepPlayer.resume();
