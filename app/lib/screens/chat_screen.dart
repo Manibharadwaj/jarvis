@@ -5,6 +5,11 @@ import 'package:http/http.dart' as http;
 import '../config.dart';
 import '../utils/call_types.dart';
 
+Map<String, String> _chatHeaders() => {
+      'Content-Type': 'application/json',
+      if (appApiKey.isNotEmpty) 'X-App-Key': appApiKey,
+    };
+
 class ChatScreen extends StatefulWidget {
   final String? callType;
   final String? roomName;
@@ -45,7 +50,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final resp = await http.post(
         Uri.parse('$serverUrl/api/chat/start'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _chatHeaders(),
         body: jsonEncode({
           'call_type': widget.callType ?? 'jarvis',
           if (widget.roomName != null) 'room_name': widget.roomName,
@@ -83,7 +88,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final resp = await http.post(
         Uri.parse('$serverUrl/api/chat/message'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _chatHeaders(),
         body: jsonEncode({'session_id': _sessionId, 'message': msg}),
       ).timeout(const Duration(seconds: 60));
 
@@ -117,7 +122,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       await http.post(
         Uri.parse('$serverUrl/api/chat/end'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _chatHeaders(),
         body: jsonEncode({'session_id': _sessionId}),
       ).timeout(const Duration(seconds: 10));
     } catch (_) {}

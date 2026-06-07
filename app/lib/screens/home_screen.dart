@@ -92,7 +92,10 @@ class _HomeScreenState extends State<HomeScreen>
       try {
         await http.post(
           Uri.parse('$serverUrl/api/register-token'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {
+            'Content-Type': 'application/json',
+            if (appApiKey.isNotEmpty) 'X-App-Key': appApiKey,
+          },
           body: jsonEncode({'token': token}),
         );
       } catch (_) {}

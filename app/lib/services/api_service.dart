@@ -5,12 +5,25 @@ import '../config.dart';
 class ApiService {
   static const String _baseUrl = serverUrl;
 
+  // Centralized headers — every backend call carries the X-App-Key that the
+  // server checks via the appAuth middleware. If appApiKey is empty the call
+  // will be rejected with 401; the user must rebuild the APK with
+  // `--dart-define=APP_API_KEY=...`.
+  static Map<String, String> _jsonHeaders() => {
+        'Content-Type': 'application/json',
+        if (appApiKey.isNotEmpty) 'X-App-Key': appApiKey,
+      };
+
+  static Map<String, String> _headers() => {
+        if (appApiKey.isNotEmpty) 'X-App-Key': appApiKey,
+      };
+
   // Verify identity code for on-demand calls
   static Future<bool> verifyIdentity(String code) async {
     try {
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/verify-identity'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _jsonHeaders(),
         body: jsonEncode({'code': code}),
       ).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
@@ -28,7 +41,7 @@ class ApiService {
     try {
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/voice/start'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _jsonHeaders(),
       ).timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         return jsonDecode(resp.body);
@@ -44,7 +57,7 @@ class ApiService {
     try {
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/voice/join'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _jsonHeaders(),
         body: jsonEncode({'roomName': roomName}),
       ).timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
@@ -61,6 +74,7 @@ class ApiService {
     try {
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/calls/history?limit=$limit&offset=$offset'),
+        headers: _headers(),
       ).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body);
@@ -77,6 +91,7 @@ class ApiService {
     try {
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/app/today'),
+        headers: _headers(),
       ).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
         return jsonDecode(resp.body);
@@ -92,7 +107,7 @@ class ApiService {
     try {
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/chat/start'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _jsonHeaders(),
         body: jsonEncode({'call_type': callType, if (roomName != null) 'room_name': roomName}),
       ).timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -107,7 +122,7 @@ class ApiService {
     try {
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/chat/message'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _jsonHeaders(),
         body: jsonEncode({'session_id': sessionId, 'message': message}),
       ).timeout(const Duration(seconds: 60));
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -122,7 +137,7 @@ class ApiService {
     try {
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/chat/end'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _jsonHeaders(),
         body: jsonEncode({'session_id': sessionId}),
       ).timeout(const Duration(seconds: 10));
       return resp.statusCode == 200;
@@ -136,6 +151,7 @@ class ApiService {
     try {
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/chat/history/$sessionId'),
+        headers: _headers(),
       ).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body);
@@ -152,7 +168,7 @@ class ApiService {
     try {
       final resp = await http.patch(
         Uri.parse('$_baseUrl/api/app/task/$id'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _jsonHeaders(),
         body: jsonEncode(updates),
       ).timeout(const Duration(seconds: 10));
       return resp.statusCode == 200;
