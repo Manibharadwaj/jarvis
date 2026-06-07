@@ -1102,4 +1102,10 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=1))
+    # num_idle_processes: how many python worker processes to keep pre-warmed.
+    # When this is 1 and the warm process is unhealthy (common when the agent
+    # has been idle for a while or after a reconnect), the first incoming call
+    # has to wait ~1s+ for a new process to spawn, which can make the phone's
+    # LiveKit connection time out before the agent joins → "ring then hang up".
+    # Bump to 3 so we always have a healthy warm worker ready.
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=3))
