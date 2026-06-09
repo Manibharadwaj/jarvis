@@ -97,6 +97,35 @@ const TOOL_DEFS = {
       },
     },
   },
+  save_memory: {
+    type: 'function',
+    function: {
+      name: 'save_memory',
+      description: 'Save an important fact about the user to persistent memory. Use when the user shares preferences, goals, habits, or important life details worth remembering for future conversations.',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: "A short label, e.g. 'diet_preference' or 'project_deadline'" },
+          value: { type: 'string', description: "The content to remember, e.g. 'vegetarian, 3000 cal target' or 'launch by June 30'" },
+        },
+        required: ['key', 'value'],
+      },
+    },
+  },
+  search_memory: {
+    type: 'function',
+    function: {
+      name: 'search_memory',
+      description: 'Search your memory for relevant past information about the user. Use to recall things the user told you in previous conversations, their preferences, habits, or important facts.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: "What to search for, e.g. 'diet preferences' or 'coding projects'" },
+        },
+        required: ['query'],
+      },
+    },
+  },
 };
 
 // ── Tool executors (direct SQL via pool, matching agent.py tool logic) ───────
@@ -221,6 +250,52 @@ async function executeLogCalories(args, pool, userId) {
   return `Logged: ${food_description} (~${estimated_calories} cal). Running total: ${newTotal} cal.`;
 }
 
+async function executeSaveMemory(args, pool, userId) {
+  const { key, value } = args;
+  if (!key || !value) return 'Missing key or value for memory.';
+  await pool.query(
+    `INSERT INTO public.user_context (user_id, key, value)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, key) DO UPDATE
+       SET value = EXCLUDED.value, updated_at = NOW()`,
+    [userId, key.slice(0, 100), value.slice(0, 500)],
+  );
+  return `Saved: ${key}`;
+}
+
+async function executeSearchMemory(args, pool, userId) {
+  const { query } = args;
+  if (!query) return 'No search query provided.';
+
+  // First check user_context for keyword matches
+  const { rows: contextRows } = await pool.query(
+    `SELECT key, value FROM public.user_context
+     WHERE user_id = $1 AND (key ILIKE $2 OR value ILIKE $2)
+     ORDER BY updated_at DESC LIMIT 5`,
+    [userId, `%${query}%`],
+  );
+
+  const results = [];
+  for (const row of contextRows) {
+    results.push(`- ${row.key}: ${row.value}`);
+  }
+
+  // Also check memories for keyword matches (fallback when embeddings not available)
+  const { rows: memoryRows } = await pool.query(
+    `SELECT content, memory_type, importance FROM public.memories
+     WHERE user_id = $1 AND content ILIKE $2
+     ORDER BY importance DESC, created_at DESC LIMIT 5`,
+    [userId, `%${query}%`],
+  );
+
+  for (const row of memoryRows) {
+    results.push(`- [${row.memory_type}] ${row.content}`);
+  }
+
+  if (results.length === 0) return 'No relevant memories found.';
+  return results.join('\n');
+}
+
 const EXECUTORS = {
   add_task: executeAddTask,
   mark_task_done: executeMarkTaskDone,
@@ -228,6 +303,8 @@ const EXECUTORS = {
   reschedule_task: executeRescheduleTask,
   update_daily_log: executeUpdateDailyLog,
   log_calories: executeLogCalories,
+  save_memory: executeSaveMemory,
+  search_memory: executeSearchMemory,
 };
 
 async function executeTool(name, args, pool, userId) {
@@ -244,14 +321,14 @@ async function executeTool(name, args, pool, userId) {
 // ── Per-call-type tool subsets (matching agent.py agent classes) ──────────────
 
 const TOOLS_BY_CALL_TYPE = {
-  wakeup: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task'],
-  'checkin-morning': ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task'],
-  'checkin-midday': ['mark_task_done', 'reschedule_task', 'remove_task', 'add_task'],
-  'checkin-afternoon': ['mark_task_done', 'update_daily_log', 'log_calories', 'reschedule_task', 'remove_task'],
-  evening: ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task'],
-  night: ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task'],
-  jarvis: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'update_daily_log', 'log_calories'],
-  manual: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'update_daily_log', 'log_calories'],
+  wakeup: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
+  'checkin-morning': ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
+  'checkin-midday': ['mark_task_done', 'reschedule_task', 'remove_task', 'add_task', 'save_memory', 'search_memory'],
+  'checkin-afternoon': ['mark_task_done', 'update_daily_log', 'log_calories', 'reschedule_task', 'remove_task', 'save_memory', 'search_memory'],
+  evening: ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
+  night: ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
+  jarvis: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'update_daily_log', 'log_calories', 'save_memory', 'search_memory'],
+  manual: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'update_daily_log', 'log_calories', 'save_memory', 'search_memory'],
 };
 
 function getToolsForCallType(callType) {

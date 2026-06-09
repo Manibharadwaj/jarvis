@@ -17,6 +17,8 @@ import cron from 'node-cron';
 import { getPromptForCallType, getInitialMessage } from './prompts.js';
 import { getToolsForCallType } from './tools.js';
 import { runAgentLoop, determineCallEnd } from './agent-loop.js';
+import { mountMemoryRoutes, processCallMemories, fetchRelevantMemories } from './memory.js';
+import { startConsolidationScheduler } from './consolidation.js';
 
 const { Pool } = pg;
 
@@ -623,6 +625,9 @@ app.post('/api/agent/call/end', agentAuth, async (req, res) => {
       ).catch(e => console.error('call_queue update failed:', e.message));
     }
 
+    // Process memories in background (non-blocking)
+    processCallMemories(call_log_id, pool);
+
     res.json({ ok: true });
   } catch (err) {
     console.error('/api/agent/call/end:', err.message);
@@ -968,7 +973,26 @@ app.post('/api/chat/message', appAuth, async (req, res) => {
     const history = await loadChatHistory(session_id);
 
     // Build system prompt and tools
-    const systemPrompt = getPromptForCallType(callType, data);
+    const systemPromptBase = getPromptForCallType(callType, data);
+
+    // Inject relevant memories into the prompt
+    let memorySection = '';
+    try {
+      const memResult = await fetchRelevantMemories(data.userId, callType, pool);
+      if (memResult.memories.length > 0 || memResult.context.length > 0) {
+        const parts = [];
+        if (memResult.context.length > 0) {
+          parts.push('=== USER CONTEXT (remember these facts) ===\n' + memResult.context.join('\n') + '\n=== END CONTEXT ===');
+        }
+        if (memResult.memories.length > 0) {
+          parts.push('=== RELEVANT MEMORIES ===\n' + memResult.memories.join('\n') + '\n=== END MEMORIES ===');
+        }
+        memorySection = '\n\n' + parts.join('\n\n');
+      }
+    } catch (e) {
+      console.error('[Chat] Memory fetch error:', e.message);
+    }
+    const systemPrompt = systemPromptBase + memorySection;
     const tools = getToolsForCallType(callType);
 
     // Run agent loop
@@ -1074,6 +1098,9 @@ app.post('/api/chat/end', appAuth, async (req, res) => {
       [session_id, durationSeconds, dbStatus, summary, identityVerified]
     );
 
+    // Process memories in background (non-blocking)
+    processCallMemories(session_id, pool);
+
     res.json({ ok: true });
   } catch (err) {
     console.error('/api/chat/end:', err.message);
@@ -1100,10 +1127,16 @@ app.get('/api/chat/history/:sessionId', appAuth, async (req, res) => {
   }
 });
 
+// ── Memory routes ───────────────────────────────────────────────────────────────
+mountMemoryRoutes(app, pool, agentAuth, appAuth);
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, async () => {
   console.log(`Jarvis backend running on port ${PORT}`);
+
+  // Start nightly memory consolidation
+  startConsolidationScheduler(pool);
 
   try {
     await pool.query('SELECT 1');
