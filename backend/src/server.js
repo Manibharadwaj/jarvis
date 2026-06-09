@@ -19,6 +19,7 @@ import { getToolsForCallType } from './tools.js';
 import { runAgentLoop, determineCallEnd } from './agent-loop.js';
 import { mountMemoryRoutes, processCallMemories, fetchRelevantMemories } from './memory.js';
 import { startConsolidationScheduler } from './consolidation.js';
+import { mountWeeklySummaryRoutes, startWeeklySummaryScheduler } from './weekly-summary.js';
 
 const { Pool } = pg;
 
@@ -1130,6 +1131,9 @@ app.get('/api/chat/history/:sessionId', appAuth, async (req, res) => {
 // ── Memory routes ───────────────────────────────────────────────────────────────
 mountMemoryRoutes(app, pool, agentAuth, appAuth);
 
+// ── Weekly summary routes ──────────────────────────────────────────────────────
+mountWeeklySummaryRoutes(app, pool);
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, async () => {
@@ -1137,6 +1141,9 @@ app.listen(PORT, async () => {
 
   // Start nightly memory consolidation
   startConsolidationScheduler(pool);
+
+  // Start weekly summary scheduler (Sundays 11:30 PM IST)
+  startWeeklySummaryScheduler(pool);
 
   try {
     await pool.query('SELECT 1');
