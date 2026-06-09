@@ -117,6 +117,51 @@ async def _api_call(method: str, path: str, payload: dict = None) -> bool:
         return False
 
 
+async def _api_call_with_response(method: str, path: str, payload: dict = None) -> dict | None:
+    """Make an API call to the backend. Returns response JSON or None on failure."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{BACKEND_URL}{path}"
+            kwargs = {
+                "headers": {"X-Agent-Secret": AGENT_SECRET, "Content-Type": "application/json"},
+                "timeout": aiohttp.ClientTimeout(total=10),
+            }
+            if payload:
+                kwargs["json"] = payload
+            async with session.request(method, url, **kwargs) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error(f"_api_call_with_response {method} {path}: {resp.status}")
+                return None
+    except Exception as e:
+        logger.error(f"_api_call_with_response {method} {path} error: {e}")
+        return None
+
+
+async def _fetch_relevant_memories(call_type: str) -> str:
+    """Fetch relevant memories and user context to inject into the system prompt."""
+    try:
+        result = await _api_call_with_response(
+            "GET",
+            f"/api/memory/search?q={call_type}&limit=5",
+        )
+        if not result:
+            return ""
+        parts = []
+        context_list = result.get("context", [])
+        memory_list = result.get("results", [])
+        if context_list:
+            lines = [f"- {c['key']}: {c['value']}" for c in context_list]
+            parts.append("=== USER CONTEXT (remember these facts) ===\n" + "\n".join(lines) + "\n=== END CONTEXT ===")
+        if memory_list:
+            lines = [f"- [{m.get('memory_type', 'episodic')}] {m['content']} (relevance: {m.get('score', 0):.2f})" for m in memory_list]
+            parts.append("=== RELEVANT MEMORIES ===\n" + "\n".join(lines) + "\n=== END MEMORIES ===")
+        return "\n\n".join(parts) if parts else ""
+    except Exception as e:
+        logger.error(f"_fetch_relevant_memories error: {e}")
+        return ""
+
+
 def _format_tasks(tasks: list, only_pending: bool = False) -> str:
     """Format tasks list for inclusion in prompt.
     If only_pending=True, exclude DONE and SKIPPED tasks.
@@ -620,6 +665,8 @@ If verified → "Verified. How may I assist, Mr. Stark?"
 If WRONG → "Access denied." No hints. No "try again". Just "Access denied." After 3 wrong → "Access denied. Terminating." Then STOP.
 CRITICAL: Once verified, NEVER re-ask for identity. Continue from where you left off.
 
+MEMORY: You have persistent memory across calls. Use search_memory to recall past conversations, preferences, and facts about the user. Use save_memory to store important things the user tells you (preferences, goals, deadlines, habits). Proactively check memory at the start of conversations to personalize your responses.
+
 After verification: Be direct and helpful. Maximum 2-3 sentences. No markdown. No sound effects or action descriptions. Voice call format. You LEAD the conversation, not the other way around."""
 
 
@@ -876,12 +923,64 @@ async def log_calories(food_description: str, estimated_calories: int) -> str:
     return "Failed to log calories. I'll note it and try again later."
 
 
+@function_tool
+async def search_memory(query: str) -> str:
+    """Search your memory for relevant past information about the user.
+    Use this to recall things the user told you in previous conversations,
+    their preferences, habits, or any important facts they shared.
+
+    Args:
+        query: What to search for, e.g. "diet preferences" or "coding projects"
+    """
+    result = await _api_call_with_response(
+        "GET",
+        f"/api/memory/search?q={query}&limit=5",
+    )
+    if not result:
+        return "Memory search unavailable."
+
+    parts = []
+    context_list = result.get("context", [])
+    memory_list = result.get("results", [])
+
+    if context_list:
+        for c in context_list:
+            parts.append(f"- {c['key']}: {c['value']}")
+    if memory_list:
+        for m in memory_list:
+            parts.append(f"- [{m.get('memory_type', 'episodic')}] {m['content']}")
+
+    if not parts:
+        return "No relevant memories found."
+    return "\n".join(parts)
+
+
+@function_tool
+async def save_memory(key: str, value: str) -> str:
+    """Save an important fact about the user to persistent memory.
+    Use this when the user shares something worth remembering for future conversations:
+    preferences, goals, habits, project details, deadlines, or personal facts.
+
+    Args:
+        key: A short label for the memory, e.g. "diet_preference" or "project_deadline"
+        value: The content to remember, e.g. "vegetarian, 3000 cal target" or "launch by June 30"
+    """
+    result = await _api_call_with_response(
+        "POST",
+        "/api/memory/save",
+        {"key": key, "value": value},
+    )
+    if result and result.get("ok"):
+        return f"Saved: {key}"
+    return "Failed to save memory."
+
+
 # ─── Agent classes ────────────────────────────────────────────────────────────
 
 class WakeupAgent(Agent):
     def __init__(self, instructions: str):
         super().__init__(instructions=instructions, tools=[
-            add_task, mark_task_done, remove_task, reschedule_task,
+            add_task, mark_task_done, remove_task, reschedule_task, search_memory, save_memory,
         ])
 
     async def on_enter(self) -> None:
@@ -891,7 +990,7 @@ class WakeupAgent(Agent):
 class MorningCheckinAgent(Agent):
     def __init__(self, instructions: str):
         super().__init__(instructions=instructions, tools=[
-            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task,
+            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task, search_memory, save_memory,
         ])
 
     async def on_enter(self) -> None:
@@ -901,7 +1000,7 @@ class MorningCheckinAgent(Agent):
 class MiddayCheckinAgent(Agent):
     def __init__(self, instructions: str):
         super().__init__(instructions=instructions, tools=[
-            mark_task_done, reschedule_task, remove_task, add_task,
+            mark_task_done, reschedule_task, remove_task, add_task, search_memory, save_memory,
         ])
 
     async def on_enter(self) -> None:
@@ -911,7 +1010,7 @@ class MiddayCheckinAgent(Agent):
 class AfternoonCheckinAgent(Agent):
     def __init__(self, instructions: str):
         super().__init__(instructions=instructions, tools=[
-            mark_task_done, update_daily_log, log_calories, reschedule_task, remove_task,
+            mark_task_done, update_daily_log, log_calories, reschedule_task, remove_task, search_memory, save_memory,
         ])
 
     async def on_enter(self) -> None:
@@ -921,7 +1020,7 @@ class AfternoonCheckinAgent(Agent):
 class EveningAgent(Agent):
     def __init__(self, instructions: str):
         super().__init__(instructions=instructions, tools=[
-            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task,
+            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task, search_memory, save_memory,
         ])
 
     async def on_enter(self) -> None:
@@ -931,7 +1030,7 @@ class EveningAgent(Agent):
 class NightAgent(Agent):
     def __init__(self, instructions: str):
         super().__init__(instructions=instructions, tools=[
-            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task,
+            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task, search_memory, save_memory,
         ])
 
     async def on_enter(self) -> None:
@@ -941,7 +1040,7 @@ class NightAgent(Agent):
 class JarvisAgent(Agent):
     def __init__(self):
         super().__init__(instructions=MANUAL_PROMPT, tools=[
-            add_task, mark_task_done, remove_task, reschedule_task, update_daily_log, log_calories,
+            add_task, mark_task_done, remove_task, reschedule_task, update_daily_log, log_calories, search_memory, save_memory,
         ])
 
     async def on_enter(self) -> None:
@@ -962,30 +1061,50 @@ async def entrypoint(ctx: JobContext) -> None:
     logger.info(f"Fetched today's data: {len(data.get('tasks', []))} tasks")
 
     # Determine call type from room name prefix and build agent with embedded data
+    # Memory is fetched per call type and injected into the prompt
     call_type_key = "jarvis"
     if room_name.startswith("wakeup"):
         call_type_key = "wakeup"
-        agent = WakeupAgent(instructions=_wakeup_prompt(data))
+        # Fetch memories for this call type
+        memory_str = await _fetch_relevant_memories("wakeup")
+        base_prompt = _wakeup_prompt(data)
+        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
+        agent = WakeupAgent(instructions=prompt)
         logger.info("Running WakeupAgent")
     elif room_name.startswith("checkin-morning"):
         call_type_key = "checkin-morning"
-        agent = MorningCheckinAgent(instructions=_morning_checkin_prompt(data))
+        memory_str = await _fetch_relevant_memories("checkin-morning")
+        base_prompt = _morning_checkin_prompt(data)
+        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
+        agent = MorningCheckinAgent(instructions=prompt)
         logger.info("Running MorningCheckinAgent")
     elif room_name.startswith("checkin-midday"):
         call_type_key = "checkin-midday"
-        agent = MiddayCheckinAgent(instructions=_midday_checkin_prompt(data))
+        memory_str = await _fetch_relevant_memories("checkin-midday")
+        base_prompt = _midday_checkin_prompt(data)
+        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
+        agent = MiddayCheckinAgent(instructions=prompt)
         logger.info("Running MiddayCheckinAgent")
     elif room_name.startswith("checkin-afternoon"):
         call_type_key = "checkin-afternoon"
-        agent = AfternoonCheckinAgent(instructions=_afternoon_checkin_prompt(data))
+        memory_str = await _fetch_relevant_memories("checkin-afternoon")
+        base_prompt = _afternoon_checkin_prompt(data)
+        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
+        agent = AfternoonCheckinAgent(instructions=prompt)
         logger.info("Running AfternoonCheckinAgent")
     elif room_name.startswith("evening"):
         call_type_key = "evening"
-        agent = EveningAgent(instructions=_evening_prompt(data))
+        memory_str = await _fetch_relevant_memories("evening")
+        base_prompt = _evening_prompt(data)
+        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
+        agent = EveningAgent(instructions=prompt)
         logger.info("Running EveningAgent")
     elif room_name.startswith("night"):
         call_type_key = "night"
-        agent = NightAgent(instructions=_night_prompt(data))
+        memory_str = await _fetch_relevant_memories("night")
+        base_prompt = _night_prompt(data)
+        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
+        agent = NightAgent(instructions=prompt)
         logger.info("Running NightAgent")
     else:
         agent = JarvisAgent()
