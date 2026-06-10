@@ -17,6 +17,7 @@ import cron from 'node-cron';
 import { getPromptForCallType, getInitialMessage } from './prompts.js';
 import { getToolsForCallType } from './tools.js';
 import { runAgentLoop, determineCallEnd } from './agent-loop.js';
+import { mountStreakRoutes } from './streak.js';
 
 const { Pool } = pg;
 
@@ -1099,6 +1100,9 @@ app.get('/api/chat/history/:sessionId', appAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── Streak routes ────────────────────────────────────────────────────────────────
+mountStreakRoutes(app, pool);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
