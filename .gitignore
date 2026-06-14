@@ -53,6 +53,12 @@ pids/
 *.jpg
 *.png
 *.gif
+*.avif
+*.webp
+*.svg
+
+# ── Misc ──────────────────────────────────────────────────────
+.baseline/
 
 # ── DB migrations runtime ─────────────────────────────────────
 db/node_modules/
