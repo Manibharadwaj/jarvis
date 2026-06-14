@@ -242,22 +242,76 @@ jarvis/
 
 ---
 
+## 🛡️ Security
+
+Phase 2 (Jun 7 2026) brought the system to a **B+** grade for a personal
+single-VPS deployment. Highlights:
+
+- **Passphrase safety** — `I'm Tony Stark` lives only in the DB. No LLM
+  prompt anywhere in the codebase contains it. Server-side timing-safe
+  compare via `crypto.timingSafeEqual`.
+- **Auth surface** — two distinct secrets: `AGENT_SECRET` (Python agent ↔
+  Node backend, header `X-Agent-Secret`) and `APP_API_KEY` (Flutter app,
+  header `X-App-Key`). Both checked with constant-time equality. If
+  `APP_API_KEY` is unset, app routes return 503 rather than accidentally
+  opening up.
+- **Rate limiting** — `/api/verify-identity` caps at 5 attempts per 5 min
+  per IP so the passphrase can't be brute-forced.
+- **Input validation** — all `time` fields in daily log are regex-validated
+  before reaching Postgres (no more `invalid input syntax for type time`).
+- **DoS hardening** — JSON body limit 100KB, startup preflight refuses
+  to boot without secrets, db CHECK constraints.
+
+Known gaps (kept as-is for a personal single-user project):
+- No HTTPS — fine for a single-VPS deployment you control; the app hits
+  `http://93.127.206.82:3000` directly. Add Caddy + a domain when you ever
+  expose this to a network you don't control.
+- CORS is wide open by default — fine for single-user; `CORS_ORIGIN` env
+  exists for when it isn't.
+
 ## 🗺️ Roadmap
 
+### Phase 1 — Foundation & Calls ✅ DONE
 - [x] Voice pipeline (LiveKit Agent → STT → LLM → TTS)
 - [x] Identity verification protocol
 - [x] Morning wakeup with quiz + schedule review
-- [x] Check-in and evening review calls
-- [x] Push notification call triggering
-- [x] Scheduled call retries with escalation
+- [x] Check-in and evening review calls (6 personas)
+- [x] Push notification call triggering (FCM)
 - [x] Streaming TTS for faster responses
 - [x] Groq Whisper v3 for sub-second STT
-- [ ] Persistent memory across calls (pgvector)
-- [ ] Emotional state detection
-- [ ] Inside jokes and relationship building
-- [ ] Chat fallback for missed calls
-- [ ] Code session tracking (6:30-10:30 PM)
-- [ ] Dashboard with streaks and mood trends
+- [x] Daemonized services (setsid + supervisor restart loop)
+- [x] Text chat fallback (same prompts, same tools)
+- [x] 5-pillar daily log + auto-seeded master schedule
+
+### Phase 2 — Security Hardening ✅ DONE (commit `3d062c4`, Jun 7 2026)
+- [x] DB CHECK constraint widened (`call_queue.status` was rejecting call-end writes)
+- [x] Passphrase removed from every LLM system prompt — server-side verify only
+- [x] `APP_API_KEY` middleware on all app + chat + verify-identity endpoints
+- [x] `AGENT_SECRET` timing-safe comparison (SHA-256 + `crypto.timingSafeEqual`)
+- [x] Per-IP rate limit on `/api/verify-identity` (5/5min)
+- [x] Time-field validation in `/api/agent/daily-log` (regex `^([01]\d|2[0-3]):[0-5]\d`)
+- [x] Body size cap (`express.json({ limit: '100kb' })`)
+- [x] CORS configurable via `CORS_ORIGIN` env
+- [x] Startup preflight — refuses to start without `DATABASE_URL` + `AGENT_SECRET`
+- [x] `start.sh` port-based kill + agent supervisor loop (no more orphan processes)
+- [x] Status command reports pids + port + health all together
+
+### Phase 3 — Memory & Continuity 🚧 IN PROGRESS
+- [ ] Missed-call retry with escalation (wakeup +20/+40/+60/+80/+100 min)
+- [ ] Persistent memory across calls (pgvector + embeddings)
+- [ ] Top-K memory retrieval injected into system prompt
+- [ ] Daily summary writer + streak tracking
+- [ ] Settings screen (passphrase, timezone, voice persona, wake hour)
+- [ ] Device token store → Postgres (auto-prune stale FCM tokens)
+
+### Phase 4 — Tests & Polish 📋 PLANNED
+- [ ] Jest unit tests for backend (auth, tools, prompts)
+- [ ] pytest for agent (prompt builders, call-end detector)
+- [ ] Code session tracker (6:30-10:30 PM focus block)
+- [ ] Reminder system (drink water, "10 min to code")
+- [ ] Agent healthcheck endpoint
+- [ ] Multi-user support (drop the `LIMIT 1` everywhere)
+- [ ] iOS app
 
 ---
 
