@@ -70,10 +70,16 @@ async function getUserId() {
 
 // ── Firebase ──────────────────────────────────────────────────────────────────
 
-const serviceAccount = JSON.parse(
-  readFileSync(new URL('../service-account.json', import.meta.url), 'utf-8')
-);
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+let firebaseReady = false;
+try {
+  const serviceAccount = JSON.parse(
+    readFileSync(new URL('../service-account.json', import.meta.url), 'utf-8')
+  );
+  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  firebaseReady = true;
+} catch (err) {
+  console.warn('⚠️  Firebase Admin not initialized — push notifications disabled:', err.message);
+}
 
 // Persist tokens to disk so scheduler works after server restarts
 const TOKEN_FILE = new URL('../device_tokens.json', import.meta.url);
@@ -108,6 +114,10 @@ async function createScheduledRoom(prefix) {
 }
 
 async function pushCall(roomName, callType) {
+  if (!firebaseReady) {
+    console.warn(`[Scheduler] Push skipped for ${callType} — Firebase not initialized`);
+    return;
+  }
   const tokens = Array.from(deviceTokens);
   if (tokens.length === 0) {
     console.warn(`[Scheduler] No devices registered — skipping push for ${callType}`);
@@ -1140,7 +1150,7 @@ mountWeeklySummaryRoutes(app, pool);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, async () => {
+app.listen(PORT, '127.0.0.1', async () => {
   console.log(`Jarvis backend running on port ${PORT}`);
 
   // Start nightly memory consolidation
@@ -1157,7 +1167,8 @@ app.listen(PORT, async () => {
     console.error('Check DB_HOST / DB_USER / DB_PASSWORD in .env');
   }
 
-  console.log(`Firebase Admin: project ${serviceAccount.project_id} ✓`);
+  if (firebaseReady) console.log(`Firebase Admin: project jarvis-62acb ✓`);
+  else console.log('Firebase Admin: DISABLED (push notifications off)');
   if (LIVEKIT_URL) console.log(`LiveKit: ${LIVEKIT_URL} ✓`);
   console.log('Scheduler armed (IST): wakeup 5AM-6:40AM (retries with dedup), checkins 8AM/12PM/4PM/8PM, evening 11PM');
 });

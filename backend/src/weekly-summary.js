@@ -303,7 +303,7 @@ export function mountWeeklySummaryRoutes(app, pool) {
   });
 
   // POST /api/weekly-summary/generate — trigger manual generation
-  app.post('/api/weekly-summary/generate', agentAuth, async (req, res) => {
+  app.post('/api/weekly-summary/generate', summaryAuth, async (req, res) => {
     try {
       const userId = req.headers['x-user-id'] || null;
 
