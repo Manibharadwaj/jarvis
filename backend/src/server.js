@@ -359,7 +359,7 @@ app.post('/api/call/push', appAuth, async (req, res) => {
 
 // ── LiveKit: manual call (creates a new room) ─────────────────────────────────
 
-app.post('/api/voice/start', async (req, res) => {
+app.post('/api/voice/start', appAuth, async (req, res) => {
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET)
     return res.status(503).json({ error: 'LiveKit not configured' });
   try {
@@ -377,7 +377,7 @@ app.post('/api/voice/start', async (req, res) => {
 
 // ── LiveKit: join a scheduled room ────────────────────────────────────────────
 
-app.post('/api/voice/join', async (req, res) => {
+app.post('/api/voice/join', appAuth, async (req, res) => {
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET)
     return res.status(503).json({ error: 'LiveKit not configured' });
   const { roomName } = req.body;
@@ -1150,7 +1150,7 @@ mountWeeklySummaryRoutes(app, pool);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, '127.0.0.1', async () => {
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`Jarvis backend running on port ${PORT}`);
 
   // Start nightly memory consolidation
