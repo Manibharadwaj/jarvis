@@ -594,6 +594,76 @@ app.patch('/api/agent/daily-log', agentAuth, async (req, res) => {
   }
 });
 
+// ── GitHub PR activity stats (for JARVIS call reports) ──────────────────────────
+
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GITHUB_USERNAME = process.env.GITHUB_USERNAME || 'Manibharadwaj';
+
+// In-memory cache: 15-minute TTL
+let githubStatsCache = null;
+let githubStatsCacheAt = 0;
+const GITHUB_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+
+async function fetchGitHubStats() {
+  if (!GITHUB_TOKEN) {
+    return { total_merged: 0, today_prs: [], has_activity: false, error: 'GITHUB_TOKEN not set' };
+  }
+
+  const now = Date.now();
+  if (githubStatsCache && (now - githubStatsCacheAt) < GITHUB_CACHE_TTL) {
+    return githubStatsCache;
+  }
+
+  try {
+    const headers = {
+      'Authorization': `Bearer ${GITHUB_TOKEN}`,
+      'Accept': 'application/vnd.github+json',
+    };
+
+    // Total merged PRs count
+    const totalResp = await fetch(
+      `https://api.github.com/search/issues?q=user:${GITHUB_USERNAME}+is:pr+is:merged&per_page=1`,
+      { headers }
+    );
+    const totalData = await totalResp.json();
+
+    // Today's merged PRs (UTC date matches GitHub's merged: qualifier)
+    const todayUTC = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const todayResp = await fetch(
+      `https://api.github.com/search/issues?q=user:${GITHUB_USERNAME}+is:pr+is:merged+merged:${todayUTC}&per_page=100`,
+      { headers }
+    );
+    const todayData = await todayResp.json();
+
+    const todayPRs = (todayData.items || []).map(pr => {
+      // Extract repo name from html_url: github.com/Owner/repo/pull/123
+      const match = pr.html_url?.match(/github\.com\/([^/]+\/[^/]+)\//);
+      return {
+        title: pr.title,
+        repo: match ? match[1] : 'unknown',
+        merged_at: pr.pull_request?.merged_at || pr.closed_at,
+      };
+    });
+
+    githubStatsCache = {
+      total_merged: totalData.total_count || 0,
+      today_prs: todayPRs,
+      has_activity: todayPRs.length > 0,
+    };
+    githubStatsCacheAt = now;
+    console.log(`[GitHub] Stats refreshed: ${githubStatsCache.total_merged} total, ${todayPRs.length} today`);
+    return githubStatsCache;
+  } catch (err) {
+    console.error('[GitHub] Stats fetch error:', err.message);
+    return { total_merged: 0, today_prs: [], has_activity: false, error: err.message };
+  }
+}
+
+app.get('/api/agent/github-stats', agentAuth, async (_req, res) => {
+  const stats = await fetchGitHubStats();
+  res.json(stats);
+});
+
 // ── No callback retries — if call is missed, catch the next scheduled call
 
 // ── Agent call logging: start/end ──────────────────────────────────────────

@@ -174,6 +174,40 @@ async def _api_call_with_response(method: str, path: str, payload: dict = None) 
         return None
 
 
+async def _fetch_github_stats() -> dict:
+    """Fetch GitHub PR merge activity from the backend."""
+    try:
+        result = await _api_call_with_response("GET", "/api/agent/github-stats")
+        if result and not result.get("error"):
+            return result
+        logger.warning(f"GitHub stats unavailable: {result}")
+    except Exception as e:
+        logger.warning(f"GitHub stats fetch error: {e}")
+    return {"total_merged": 0, "today_prs": [], "has_activity": False}
+
+
+def _format_github_stats(stats: dict) -> str:
+    """Format GitHub stats into a human-readable string for the prompt."""
+    total = stats.get("total_merged", 0)
+    today_prs = stats.get("today_prs", [])
+    has_activity = stats.get("has_activity", False)
+
+    if total == 0 and not has_activity:
+        return ""
+
+    lines = [f"Total PRs merged to date: {total}"]
+
+    if has_activity and today_prs:
+        pr_descriptions = [f"'{pr['title']}' in {pr['repo']}" for pr in today_prs[:5]]
+        if len(today_prs) > 5:
+            pr_descriptions.append(f"and {len(today_prs) - 5} more")
+        lines.append(f"PRs merged today: {', '.join(pr_descriptions)}")
+    else:
+        lines.append("No new merges today")
+
+    return "\n" + "GitHub activity: " + ". ".join(lines) + "."
+
+
 async def _fetch_relevant_memories(call_type: str) -> str:
     """Fetch relevant memories and user context to inject into the system prompt."""
     try:
@@ -323,7 +357,7 @@ def _determine_call_end(chat_ctx_items: list, call_type: str) -> str:
 
 # ─── System prompts (with embedded data) ────────────────────────────────────────
 
-def _wakeup_prompt(data: dict) -> str:
+def _wakeup_prompt(data: dict, github_str: str = "") -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     next_call = _next_call_info("wakeup")
@@ -331,7 +365,7 @@ def _wakeup_prompt(data: dict) -> str:
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are NOT a chatbot. You are a PROTOCOL. You follow these steps EXACTLY. You call him "sir" or "Mr. Stark". This is the 5 AM wakeup call.
 
 CURRENT TIME: {t['date']}, {t['time']} IST. Day {t['day_of_year']} of the year, {t['days_remaining']} days remaining.
-{next_call}.
+{next_call}.{github_str}
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -388,7 +422,7 @@ def _checkin_prompt(data: dict) -> str:
     return _midday_checkin_prompt(data)
 
 
-def _morning_checkin_prompt(data: dict) -> str:
+def _morning_checkin_prompt(data: dict, github_str: str = "") -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
@@ -397,7 +431,7 @@ def _morning_checkin_prompt(data: dict) -> str:
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 8:45 AM post-workout check-in.
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.
+{next_call}.{github_str}
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -454,7 +488,7 @@ End EXACTLY with: "Goodbye, Mr. Stark."
 - The schedule and log data is already provided. Do NOT say you need to fetch it."""
 
 
-def _midday_checkin_prompt(data: dict) -> str:
+def _midday_checkin_prompt(data: dict, github_str: str = "") -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
@@ -463,7 +497,7 @@ def _midday_checkin_prompt(data: dict) -> str:
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the noon check-in.
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.
+{next_call}.{github_str}
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -517,7 +551,7 @@ End EXACTLY with: "Goodbye, Mr. Stark."
 - The schedule and log data is already provided. Do NOT say you need to fetch it."""
 
 
-def _afternoon_checkin_prompt(data: dict) -> str:
+def _afternoon_checkin_prompt(data: dict, github_str: str = "") -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
@@ -526,7 +560,7 @@ def _afternoon_checkin_prompt(data: dict) -> str:
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 4 PM afternoon check-in.
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.
+{next_call}.{github_str}
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -581,7 +615,7 @@ End EXACTLY with: "Goodbye, Mr. Stark."
 - The schedule and log data is already provided. Do NOT say you need to fetch it."""
 
 
-def _evening_prompt(data: dict) -> str:
+def _evening_prompt(data: dict, github_str: str = "") -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
@@ -590,7 +624,7 @@ def _evening_prompt(data: dict) -> str:
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 8 PM evening review. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.
+{next_call}.{github_str}
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -641,7 +675,7 @@ Before goodbye, tell him when the next call is: "{next_call}."
 - The schedule and log data is already provided. Do NOT say you need to fetch it."""
 
 
-def _night_prompt(data: dict) -> str:
+def _night_prompt(data: dict, github_str: str = "") -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     all_tasks_str = _format_tasks(data.get("tasks", []), only_pending=False)
@@ -651,7 +685,7 @@ def _night_prompt(data: dict) -> str:
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 11 PM night review. The FINAL check-in of the day. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.
+{next_call}.{github_str}
 
 === ALL TODAY'S TASKS ===
 {all_tasks_str}
@@ -1117,6 +1151,12 @@ async def entrypoint(ctx: JobContext) -> None:
     data = await _fetch_today()
     logger.info(f"Fetched today's data: {len(data.get('tasks', []))} tasks")
 
+    # Fetch GitHub PR activity stats
+    github_stats = await _fetch_github_stats()
+    github_str = _format_github_stats(github_stats)
+    if github_str:
+        logger.info(f"GitHub stats: {github_str}")
+
     # Determine call type from room name prefix and build agent with embedded data
     # Memory is fetched per call type and injected into the prompt
     call_type_key = "jarvis"
@@ -1124,42 +1164,42 @@ async def entrypoint(ctx: JobContext) -> None:
         call_type_key = "wakeup"
         # Fetch memories for this call type
         memory_str = await _fetch_relevant_memories("wakeup")
-        base_prompt = _wakeup_prompt(data)
+        base_prompt = _wakeup_prompt(data, github_str)
         prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
         agent = WakeupAgent(instructions=prompt)
         logger.info("Running WakeupAgent")
     elif room_name.startswith("checkin-morning"):
         call_type_key = "checkin-morning"
         memory_str = await _fetch_relevant_memories("checkin-morning")
-        base_prompt = _morning_checkin_prompt(data)
+        base_prompt = _morning_checkin_prompt(data, github_str)
         prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
         agent = MorningCheckinAgent(instructions=prompt)
         logger.info("Running MorningCheckinAgent")
     elif room_name.startswith("checkin-midday"):
         call_type_key = "checkin-midday"
         memory_str = await _fetch_relevant_memories("checkin-midday")
-        base_prompt = _midday_checkin_prompt(data)
+        base_prompt = _midday_checkin_prompt(data, github_str)
         prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
         agent = MiddayCheckinAgent(instructions=prompt)
         logger.info("Running MiddayCheckinAgent")
     elif room_name.startswith("checkin-afternoon"):
         call_type_key = "checkin-afternoon"
         memory_str = await _fetch_relevant_memories("checkin-afternoon")
-        base_prompt = _afternoon_checkin_prompt(data)
+        base_prompt = _afternoon_checkin_prompt(data, github_str)
         prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
         agent = AfternoonCheckinAgent(instructions=prompt)
         logger.info("Running AfternoonCheckinAgent")
     elif room_name.startswith("evening"):
         call_type_key = "evening"
         memory_str = await _fetch_relevant_memories("evening")
-        base_prompt = _evening_prompt(data)
+        base_prompt = _evening_prompt(data, github_str)
         prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
         agent = EveningAgent(instructions=prompt)
         logger.info("Running EveningAgent")
     elif room_name.startswith("night"):
         call_type_key = "night"
         memory_str = await _fetch_relevant_memories("night")
-        base_prompt = _night_prompt(data)
+        base_prompt = _night_prompt(data, github_str)
         prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
         agent = NightAgent(instructions=prompt)
         logger.info("Running NightAgent")
