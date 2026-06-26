@@ -1187,13 +1187,8 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.room.on("disconnected", _on_room_disconnect)
     await room_disconnect.wait()
 
-    # Clean up the agent session
-    try:
-        await session.aclose()
-    except Exception:
-        pass
-
     # ── Call ended: determine reason and log end ──
+    # Collect chat items BEFORE closing the session (context dies after aclose)
     chat_items = list(agent.session.chat_ctx.items) if hasattr(agent, 'session') and hasattr(agent.session, 'chat_ctx') else []
     end_reason = _determine_call_end(chat_items, call_type_key)
     duration_seconds = int((datetime.now(timezone.utc) - call_start_time).total_seconds())
@@ -1234,6 +1229,12 @@ async def entrypoint(ctx: JobContext) -> None:
                     logger.warning(f"Call end log failed: {resp.status}")
     except Exception as e:
         logger.warning(f"Call end log error: {e}")
+
+    # Now safe to close the session (agent context is dead after this)
+    try:
+        await session.aclose()
+    except Exception:
+        pass
 
     # No callback retries — missed calls are caught at the next scheduled call
 

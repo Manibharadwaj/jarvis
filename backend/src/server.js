@@ -129,6 +129,11 @@ async function pushCall(roomName, callType) {
     android: { priority: 'high', ttl: 60 },
   });
   console.log(`[Scheduler] Push for ${callType}: ${result.successCount} ok, ${result.failureCount} fail`);
+  if (result.failureCount > 0 && result.responses?.length) {
+    for (const r of result.responses) {
+      if (!r.success) console.error('[Scheduler] FCM error:', r.error?.message || r.error);
+    }
+  }
 }
 
 async function triggerScheduledCall(callType) {
