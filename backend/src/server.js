@@ -664,6 +664,53 @@ app.get('/api/agent/github-stats', agentAuth, async (_req, res) => {
   res.json(stats);
 });
 
+// ── Trending tech/business news (for JARVIS call context) ──────────────────────
+
+let newsCache = null;
+let newsCacheAt = 0;
+const NEWS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours — news doesn't change that fast
+
+async function fetchTrendingNews() {
+  const now = Date.now();
+  if (newsCache && (now - newsCacheAt) < NEWS_CACHE_TTL) {
+    return newsCache;
+  }
+
+  try {
+    // Fetch top stories from HackerNews (free, no auth needed)
+    const topResp = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
+    const topIds = await topResp.json();
+
+    // Get top 10 stories with details
+    const stories = await Promise.all(
+      topIds.slice(0, 15).map(async (id) => {
+        try {
+          const r = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+          return await r.json();
+        } catch { return null; }
+      })
+    );
+
+    const headlines = stories
+      .filter(s => s && s.title && s.score > 50)
+      .slice(0, 5)
+      .map(s => s.title);
+
+    newsCache = { headlines, source: 'hackernews' };
+    newsCacheAt = now;
+    console.log(`[News] Refreshed: ${headlines.length} headlines`);
+    return newsCache;
+  } catch (err) {
+    console.error('[News] Fetch error:', err.message);
+    return { headlines: [], source: 'hackernews', error: err.message };
+  }
+}
+
+app.get('/api/agent/trending-news', agentAuth, async (_req, res) => {
+  const news = await fetchTrendingNews();
+  res.json(news);
+});
+
 // ── No callback retries — if call is missed, catch the next scheduled call
 
 // ── Agent call logging: start/end ──────────────────────────────────────────
