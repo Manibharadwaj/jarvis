@@ -176,6 +176,13 @@ async function triggerScheduledCall(callType) {
       );
     }
 
+    // Don't create a LiveKit room if there's nobody to receive the push
+    const tokens = Array.from(deviceTokens);
+    if (tokens.length === 0) {
+      console.log(`[Scheduler] No devices registered — skipping ${callType} call entirely`);
+      return;
+    }
+
     // Send the call
     const roomName = await createScheduledRoom(callType);
     await pushCall(roomName, callType);
