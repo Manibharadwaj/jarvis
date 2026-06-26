@@ -6,7 +6,9 @@
 *.pem
 service-account.json
 device_tokens.json
-google-services.json
+# google-services.json is NOT a secret — it contains a public Firebase client key
+# that gets embedded in the APK anyway. It's REQUIRED for Flutter builds.
+# Only the server-side service-account.json is a real secret.
 
 # ── Python ────────────────────────────────────────────────────
 __pycache__/

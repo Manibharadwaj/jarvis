@@ -1173,7 +1173,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     await session.start(room=ctx.room, agent=agent)
-    await session.wait_for_inactive()
+    await session.wait_for_idle()
 
     # ── Call ended: determine reason and log end ──
     chat_items = list(agent.session.chat_ctx.items) if hasattr(agent, 'session') and hasattr(agent.session, 'chat_ctx') else []
