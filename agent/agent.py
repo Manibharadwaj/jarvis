@@ -82,6 +82,41 @@ def _time_context() -> dict:
     }
 
 
+# ── Call schedule for next-call info ──────────────────────────────────────────
+CALL_SCHEDULE = [
+    ("wakeup",              5,  0),
+    ("checkin-morning",     8, 45),
+    ("checkin-midday",     12,  0),
+    ("checkin-afternoon",  16,  0),
+    ("evening",            20,  0),
+    ("night",              23,  0),
+]
+
+
+def _next_call_info(current_call_type: str) -> str:
+    """Calculate time until the next scheduled call. Returns a human-readable string."""
+    now = datetime.now(IST)
+    now_mins = now.hour * 60 + now.minute
+
+    # Find the next call after the current time
+    for name, hour, minute in CALL_SCHEDULE:
+        call_mins = hour * 60 + minute
+        if call_mins > now_mins and name != current_call_type:
+            diff = call_mins - now_mins
+            hours_left = diff // 60
+            mins_left = diff % 60
+            if hours_left > 0:
+                return f"Next call: {name.replace('-', ' ')} at {hour:02d}:{minute:02d} IST ({hours_left} hour{'s' if hours_left != 1 else ''} {mins_left} min from now)"
+            else:
+                return f"Next call: {name.replace('-', ' ')} at {hour:02d}:{minute:02d} IST ({mins_left} min from now)"
+
+    # If all calls today are past, next is tomorrow's wakeup
+    diff = (24 * 60 - now_mins) + (5 * 60)  # minutes until 5 AM tomorrow
+    hours_left = diff // 60
+    mins_left = diff % 60
+    return f"Next call: wakeup at 05:00 IST tomorrow ({hours_left} hour{'s' if hours_left != 1 else ''} {mins_left} min from now)"
+
+
 # ─── Data fetching ────────────────────────────────────────────────────────────
 
 async def _fetch_today() -> dict:
@@ -291,10 +326,12 @@ def _determine_call_end(chat_ctx_items: list, call_type: str) -> str:
 def _wakeup_prompt(data: dict) -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
+    next_call = _next_call_info("wakeup")
     return f"""\
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are NOT a chatbot. You are a PROTOCOL. You follow these steps EXACTLY. You call him "sir" or "Mr. Stark". This is the 5 AM wakeup call.
 
 CURRENT TIME: {t['date']}, {t['time']} IST. Day {t['day_of_year']} of the year, {t['days_remaining']} days remaining.
+{next_call}.
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -333,6 +370,7 @@ Acknowledge. Say: "I will call you at 8:45 to check your progress."
 
 STEP 6 — SIGN OFF:
 Motivational quote (1 line).
+Before goodbye, tell him when the next call is: "{next_call}."
 End EXACTLY with: "Happy morning, Mr. Stark. Goodbye."
 
 === RULES ===
@@ -354,10 +392,12 @@ def _morning_checkin_prompt(data: dict) -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
+    next_call = _next_call_info("checkin-morning")
     return f"""\
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 8:45 AM post-workout check-in.
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
+{next_call}.
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -399,7 +439,9 @@ Present the next pending task. "Your focus for the next few hours: [task title].
 If they want to add tasks, use add_task.
 
 STEP 6 — SIGN OFF:
-Motivational quote (1 line). End EXACTLY with: "I will check on you at noon. Goodbye, Mr. Stark."
+Motivational quote (1 line).
+Before goodbye, tell him when the next call is: "{next_call}."
+End EXACTLY with: "Goodbye, Mr. Stark."
 
 === RULES ===
 - You are a PROTOCOL. Follow the steps. No deviations.
@@ -416,10 +458,12 @@ def _midday_checkin_prompt(data: dict) -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
+    next_call = _next_call_info("checkin-midday")
     return f"""\
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the noon check-in.
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
+{next_call}.
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -458,7 +502,9 @@ STEP 5 — FOCUS:
 Present the next pending task. If they want to add tasks, use add_task.
 
 STEP 6 — SIGN OFF:
-Motivational quote (1 line). End EXACTLY with: "I will check on you at four. Goodbye, Mr. Stark."
+Motivational quote (1 line).
+Before goodbye, tell him when the next call is: "{next_call}."
+End EXACTLY with: "Goodbye, Mr. Stark."
 
 === RULES ===
 - You are a PROTOCOL. Follow the steps. No deviations.
@@ -475,10 +521,12 @@ def _afternoon_checkin_prompt(data: dict) -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
+    next_call = _next_call_info("checkin-afternoon")
     return f"""\
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 4 PM afternoon check-in.
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
+{next_call}.
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -518,7 +566,9 @@ STEP 5 — FOCUS:
 Present the next priority task. "Your focus for the rest of the day: [task title]."
 
 STEP 6 — SIGN OFF:
-Motivational quote (1 line). End EXACTLY with: "I will see you at eight for the evening review. Goodbye, Mr. Stark."
+Motivational quote (1 line).
+Before goodbye, tell him when the next call is: "{next_call}."
+End EXACTLY with: "Goodbye, Mr. Stark."
 
 === RULES ===
 - You are a PROTOCOL. Follow the steps. No deviations.
@@ -535,10 +585,12 @@ def _evening_prompt(data: dict) -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     log_str = _format_daily_log(data.get("daily_log"))
+    next_call = _next_call_info("evening")
     return f"""\
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 8 PM evening review. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
+{next_call}.
 
 === TODAY'S PENDING TASKS ===
 {tasks_str}
@@ -576,6 +628,7 @@ Go through PENDING tasks only. For each: "Did you complete [task title]?"
 STEP 5 — SIGN OFF:
 Motivational quote (1 line).
 End EXACTLY with: "I will see you at 11 PM for the final review. Good evening, Mr. Stark."
+Before goodbye, tell him when the next call is: "{next_call}."
 
 === RULES ===
 - You are a PROTOCOL. Follow the steps. No deviations.
@@ -593,10 +646,12 @@ def _night_prompt(data: dict) -> str:
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
     all_tasks_str = _format_tasks(data.get("tasks", []), only_pending=False)
     log_str = _format_daily_log(data.get("daily_log"))
+    next_call = _next_call_info("night")
     return f"""\
 You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 11 PM night review. The FINAL check-in of the day. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
+{next_call}.
 
 === ALL TODAY'S TASKS ===
 {all_tasks_str}
@@ -643,7 +698,8 @@ Then ask: "What went well? What didn't?" Use update_daily_log field="day_notes" 
 STEP 5 — SIGN OFF:
 If score >= 7: celebratory quote.
 If score < 7: motivational quote about tomorrow.
-End EXACTLY with: "I will wake you at 5 AM sharp. Good night, Mr. Stark."
+Before goodbye, tell him when the next call is: "{next_call}."
+End EXACTLY with: "Good night, Mr. Stark."
 
 === RULES ===
 - You are a PROTOCOL. Follow every step. No deviations. No skipping.
