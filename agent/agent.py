@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import asyncio
 import httpx
 import aiohttp
 from datetime import datetime, timezone, timedelta
@@ -1173,7 +1174,24 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     await session.start(room=ctx.room, agent=agent)
-    await session.wait_for_idle()
+
+    # Wait until the LiveKit room disconnects (user hangs up or connection drops).
+    # session.wait_for_idle() only waits until the agent finishes a turn — not
+    # until the call ends. We need to actually wait for the room to close.
+    room_disconnect = asyncio.Event()
+
+    def _on_room_disconnect(reason=None):
+        logger.info(f"Room disconnected (reason: {reason})")
+        room_disconnect.set()
+
+    ctx.room.on("disconnected", _on_room_disconnect)
+    await room_disconnect.wait()
+
+    # Clean up the agent session
+    try:
+        await session.aclose()
+    except Exception:
+        pass
 
     # ── Call ended: determine reason and log end ──
     chat_items = list(agent.session.chat_ctx.items) if hasattr(agent, 'session') and hasattr(agent.session, 'chat_ctx') else []
