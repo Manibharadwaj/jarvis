@@ -139,11 +139,14 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
     try {
       // 1. Get LiveKit room token — join existing scheduled room or create a new one
       final http.Response resp;
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      if (appApiKey.isNotEmpty) headers['X-App-Key'] = appApiKey;
+
       if (widget.roomName != null && widget.roomName!.isNotEmpty) {
         resp = await http
             .post(
               Uri.parse('$serverUrl/api/voice/join'),
-              headers: {'Content-Type': 'application/json'},
+              headers: headers,
               body: jsonEncode({'roomName': widget.roomName}),
             )
             .timeout(const Duration(seconds: 15));
@@ -155,7 +158,7 @@ class _CallScreenState extends State<CallScreen> with TickerProviderStateMixin {
         resp = await http
             .post(
               Uri.parse('$serverUrl/api/voice/start'),
-              headers: {'Content-Type': 'application/json'},
+              headers: headers,
               body: startBody.isNotEmpty ? jsonEncode(startBody) : null,
             )
             .timeout(const Duration(seconds: 15));
