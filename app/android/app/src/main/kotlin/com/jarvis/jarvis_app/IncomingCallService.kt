@@ -19,6 +19,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
 
 class IncomingCallService : Service() {
 
@@ -232,16 +233,22 @@ class IncomingCallService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val callerPerson = Person.Builder()
+            .setName(caller)
+            .setImportant(true)
+            .build()
+
+        // CallStyle renders native full-size Answer/Decline buttons directly on the
+        // banner/lock screen (like a real incoming call), instead of a plain
+        // notification the user has to tap into the app to act on.
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Incoming call from $caller")
-            .setContentText("Tap to answer")
+            .setContentIntent(fullScreenPi)
             .setFullScreenIntent(fullScreenPi, true)
+            .setStyle(NotificationCompat.CallStyle.forIncomingCall(callerPerson, declinePi, answerPi))
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
-            .addAction(0, "Answer", answerPi)
-            .addAction(0, "Decline", declinePi)
 
         return builder.build()
     }

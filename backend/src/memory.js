@@ -4,12 +4,15 @@
 //
 // Two memory stores:
 //   1. `user_context` — key-value facts (e.g. "diet_preference" → "vegetarian, 3000 cal")
-//   2. `memories`     — vector-searchable episodic memories with embeddings
+//   2. `memories`     — keyword-searchable memories (type/importance/active)
+//
+// Note: pgvector isn't enabled on this DB, so memory search is keyword-based,
+// not semantic/embedding-based.
 //
 // Both are scoped per user. In single-user mode (no X-User-Id), falls back to the
 // first profile.
 
-import { generateEmbedding } from './embeddings.js';
+const MEMORY_TYPES = ['fact', 'preference', 'goal', 'commitment', 'emotional', 'inside_joke', 'win', 'struggle'];
 
 // ── Helper: resolve userId from request ────────────────────────────────────────
 // Priority: X-User-Id header (from agent) > fallback to first profile
@@ -87,9 +90,8 @@ export function mountMemoryRoutes(app, pool, agentAuth, appAuth) {
     }
   });
 
-  // ── GET /api/memory/search — Semantic search across memories ────────────────
+  // ── GET /api/memory/search — Keyword search across memories ─────────────────
   // Query params: ?q=<query>&limit=<5>
-  // Generates an embedding for the query, does cosine similarity search
   app.get('/api/memory/search', memoryAuth, async (req, res) => {
     try {
       const userId = await resolveUserId(req, pool);
@@ -100,34 +102,15 @@ export function mountMemoryRoutes(app, pool, agentAuth, appAuth) {
 
       if (!query.trim()) return res.json({ results: [] });
 
-      // Generate embedding for the search query
-      const embedding = await generateEmbedding(query);
-      if (!embedding) {
-        // Fallback: keyword search on content if embedding fails
-        const { rows } = await pool.query(
-          `SELECT id, content, memory_type, importance, created_at
-           FROM public.memories
-           WHERE user_id = $1 AND content ILIKE $2
-           ORDER BY importance DESC, created_at DESC
-           LIMIT $3`,
-          [userId, `%${query}%`, limit]
-        );
-        return res.json({ results: rows.map(r => ({ ...r, score: null })) });
-      }
-
-      // Vector similarity search using cosine distance
-      const embeddingStr = `[${embedding.join(',')}]`;
       const { rows } = await pool.query(
-        `SELECT id, content, memory_type, importance, created_at,
-                1 - (embedding <=> $1::vector) AS score
+        `SELECT id, content, type, importance, created_at
          FROM public.memories
-         WHERE user_id = $2 AND embedding IS NOT NULL
-         ORDER BY embedding <=> $1::vector
+         WHERE user_id = $1 AND active = true AND content ILIKE $2
+         ORDER BY importance DESC, created_at DESC
          LIMIT $3`,
-        [embeddingStr, userId, limit]
+        [userId, `%${query}%`, limit]
       );
 
-      // Also search user_context for keyword matches (supplement vector results)
       const { rows: contextRows } = await pool.query(
         `SELECT key, value, updated_at
          FROM public.user_context
@@ -137,18 +120,15 @@ export function mountMemoryRoutes(app, pool, agentAuth, appAuth) {
         [userId, `%${query}%`]
       );
 
-      res.json({
-        results: rows.filter(r => r.score > 0.5), // Only reasonably relevant results
-        context: contextRows,
-      });
+      res.json({ results: rows, context: contextRows });
     } catch (err) {
       console.error('[Memory] /api/memory/search:', err.message);
       res.status(500).json({ error: err.message });
     }
   });
 
-  // ── POST /api/memory/episode — Save an episodic memory with auto-embedding ──
-  // Body: { content: string, memory_type?: 'episodic'|'semantic'|'preference',
+  // ── POST /api/memory/episode — Save a memory ────────────────────────────────
+  // Body: { content: string, memory_type?: one of MEMORY_TYPES,
   //          importance?: 1-5, call_log_id?: string }
   app.post('/api/memory/episode', memoryAuth, async (req, res) => {
     try {
@@ -158,19 +138,14 @@ export function mountMemoryRoutes(app, pool, agentAuth, appAuth) {
       const { content, memory_type, importance, call_log_id } = req.body;
       if (!content) return res.status(400).json({ error: 'content required' });
 
-      const memType = ['episodic', 'semantic', 'preference'].includes(memory_type)
-        ? memory_type : 'episodic';
+      const memType = MEMORY_TYPES.includes(memory_type) ? memory_type : 'fact';
       const imp = Math.min(5, Math.max(1, importance || 3));
 
-      // Generate embedding (non-blocking — store without if it fails)
-      const embedding = await generateEmbedding(content);
-      const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
-
       const result = await pool.query(
-        `INSERT INTO public.memories (user_id, content, memory_type, importance, embedding, call_log_id)
-         VALUES ($1, $2, $3, $4, $5::vector, $6)
-         RETURNING id, content, memory_type, importance, created_at`,
-        [userId, content, memType, imp, embeddingStr, call_log_id || null]
+        `INSERT INTO public.memories (user_id, content, type, importance, source_call_log_id)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, content, type, importance, created_at`,
+        [userId, content, memType, imp, call_log_id || null]
       );
 
       res.json({ ok: true, memory: result.rows[0] });
@@ -201,14 +176,14 @@ export function mountMemoryRoutes(app, pool, agentAuth, appAuth) {
 // Called nightly and on-demand. For each user:
 //   1. Find un-summarized call logs
 //   2. Extract key facts via LLM → save to user_context
-//   3. Create episodic memories with embeddings → save to memories
+//   3. Create memories → save to memories
 //   4. Mark calls as summarized
 
 export async function consolidateMemoriesForUser(userId, pool) {
-  const { OLLAMA_BASE_URL, OLLAMA_API_KEY, OLLAMA_MODEL } = process.env;
-  const ollamaUrl = OLLAMA_BASE_URL || 'https://ollama.com/v1';
-  const ollamaKey = OLLAMA_API_KEY || '';
-  const model = OLLAMA_MODEL || 'gemma3:12b';
+  const { GLM_BASE_URL, GLM_API_KEY, GLM_MODEL } = process.env;
+  const glmUrl = GLM_BASE_URL || 'https://api.z.ai/api/paas/v4';
+  const glmKey = GLM_API_KEY || '';
+  const model = GLM_MODEL || 'glm-4.5-flash';
 
   // Find un-summarized calls for this user (last 7 days, limit 20)
   const { rows: unsummarizedCalls } = await pool.query(
@@ -235,7 +210,7 @@ export async function consolidateMemoriesForUser(userId, pool) {
       const extractionPrompt = `Extract key facts, preferences, and notable events from this call summary.
 Return JSON with two arrays:
 - "facts": array of {key: string, value: string} — key factual observations (e.g. {"key": "diet_preference", "value": "vegetarian, 3000 cal target"})
-- "episodes": array of {content: string, importance: 1-5, memory_type: "episodic"|"semantic"|"preference"} — memorable moments
+- "episodes": array of {content: string, importance: 1-5, memory_type: "${MEMORY_TYPES_STR}"} — memorable moments
 
 Call type: ${call.call_type}
 Summary: ${call.summary}
@@ -244,9 +219,9 @@ Keep facts concise (under 100 chars each). Limit to 5 facts and 3 episodes max.
 Respond ONLY with valid JSON, no markdown.`;
 
       const headers = { 'Content-Type': 'application/json' };
-      if (ollamaKey) headers['Authorization'] = `Bearer ${ollamaKey}`;
+      if (glmKey) headers['Authorization'] = `Bearer ${glmKey}`;
 
-      const llmResp = await fetch(`${ollamaUrl}/chat/completions`, {
+      const llmResp = await fetch(`${glmUrl}/chat/completions`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -254,6 +229,7 @@ Respond ONLY with valid JSON, no markdown.`;
           messages: [{ role: 'user', content: extractionPrompt }],
           stream: false,
           temperature: 0.3,
+          thinking: { type: 'disabled' },
         }),
         signal: AbortSignal.timeout(30_000),
       });
@@ -292,20 +268,17 @@ Respond ONLY with valid JSON, no markdown.`;
         }
       }
 
-      // Save episodic memories
+      // Save memories
       if (extracted.episodes && Array.isArray(extracted.episodes)) {
         for (const ep of extracted.episodes.slice(0, 3)) {
           if (ep.content) {
-            const embedding = await generateEmbedding(ep.content);
-            const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
-            const memType = ['episodic', 'semantic', 'preference'].includes(ep.memory_type)
-              ? ep.memory_type : 'episodic';
+            const memType = MEMORY_TYPES.includes(ep.memory_type) ? ep.memory_type : 'fact';
             const imp = Math.min(5, Math.max(1, ep.importance || 3));
 
             await pool.query(
-              `INSERT INTO public.memories (user_id, content, memory_type, importance, embedding, call_log_id)
-               VALUES ($1, $2, $3, $4, $5::vector, $6)`,
-              [userId, ep.content, memType, imp, embeddingStr, call.id]
+              `INSERT INTO public.memories (user_id, content, type, importance, source_call_log_id)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [userId, ep.content, memType, imp, call.id]
             );
             memoriesCreated++;
           }
@@ -332,9 +305,11 @@ Respond ONLY with valid JSON, no markdown.`;
   };
 }
 
+const MEMORY_TYPES_STR = MEMORY_TYPES.join('"|"');
+
 // ── Post-call memory processing ───────────────────────────────────────────────
-// Called after a call ends. Generates embeddings for transcript messages
-// and extracts quick facts (no LLM — just saves the summary as an episode).
+// Called after a call ends. Saves the call summary as a memory (no LLM call —
+// consolidation handles fact extraction separately).
 
 export async function processCallMemories(callLogId, pool) {
   try {
@@ -347,61 +322,18 @@ export async function processCallMemories(callLogId, pool) {
 
     const call = callRows[0];
 
-    // Save the call summary as an episodic memory with embedding
+    // Save the call summary as a memory
     if (call.summary.length >= 20) {
-      const embedding = await generateEmbedding(call.summary);
-      const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
-
       await pool.query(
-        `INSERT INTO public.memories (user_id, content, memory_type, importance, embedding, call_log_id)
-         VALUES ($1, $2, 'episodic', 3, $3::vector, $4)`,
-        [call.user_id, `(${call.call_type}) ${call.summary}`, embeddingStr, call.id]
+        `INSERT INTO public.memories (user_id, content, type, importance, source_call_log_id)
+         VALUES ($1, $2, 'fact', 3, $3)`,
+        [call.user_id, `(${call.call_type}) ${call.summary}`, call.id]
       ).catch(err => {
-        // If embedding insert fails (e.g. dimension mismatch), try without
-        console.error('[Memory] Embedding insert failed, trying without:', err.message);
-        pool.query(
-          `INSERT INTO public.memories (user_id, content, memory_type, importance, call_log_id)
-           VALUES ($1, $2, 'episodic', 3, $3)`,
-          [call.user_id, `(${call.call_type}) ${call.summary}`, call.id]
-        ).catch(e => console.error('[Memory] Fallback memory insert also failed:', e.message));
+        console.error('[Memory] Memory insert failed:', err.message);
       });
     }
 
-    // Generate embeddings for transcript messages (async, non-blocking)
-    const { rows: transcripts } = await pool.query(
-      `SELECT id, role, content FROM public.call_transcripts
-       WHERE call_log_id = $1 AND role IN ('user', 'assistant')
-         AND content IS NOT NULL AND length(content) > 20
-       ORDER BY created_at`,
-      [callLogId]
-    );
-
-    // Process embeddings in background — don't block the response
-    setImmediate(async () => {
-      for (const t of transcripts.slice(0, 20)) { // Limit to 20 messages per call
-        try {
-          const emb = await generateEmbedding(t.content);
-          if (emb) {
-            await pool.query(
-              'UPDATE public.call_transcripts SET embedding = $1 WHERE id = $2',
-              [`[${emb.join(',')}]`, t.id]
-            ).catch(() => {}); // Silently ignore embedding update failures
-          }
-        } catch {
-          // Non-fatal — move on
-        }
-      }
-
-      // Update embedding model tracking
-      const embModel = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
-      await pool.query(
-        'UPDATE public.call_logs SET embedding_model = $1 WHERE id = $2',
-        [embModel, callLogId]
-      ).catch(() => {});
-
-      console.log(`[Memory] Processed embeddings for call ${callLogId}`);
-    });
-
+    console.log(`[Memory] Processed memory for call ${callLogId}`);
   } catch (err) {
     console.error('[Memory] processCallMemories error:', err.message);
   }
@@ -410,42 +342,26 @@ export async function processCallMemories(callLogId, pool) {
 // ── Fetch relevant memories for a call type ────────────────────────────────────
 // Called before building a system prompt to inject context.
 // Returns { memories: string[], context: string[] }
-
-const MEMORY_QUERIES = {
-  wakeup: 'morning routine goals habits preferences schedule',
-  'checkin-morning': 'gym workout diet breakfast morning habits',
-  'checkin-midday': 'work productivity lunch diet discipline',
-  'checkin-afternoon': 'work progress diet afternoon habits coding',
-  evening: 'dinner coding projects evening routine',
-  night: 'day review sleep habits books reading goals reflection',
-  jarvis: 'preferences goals habits projects important facts',
-};
+//
+// No pgvector on this DB, so this returns the most important/recent memories
+// rather than a call-type-specific semantic match.
 
 export async function fetchRelevantMemories(userId, callType, pool) {
   const results = { memories: [], context: [] };
-  const query = MEMORY_QUERIES[callType] || 'preferences goals habits';
 
   try {
-    // 1. Search episodic memories by vector similarity
-    const embedding = await generateEmbedding(query);
-    if (embedding) {
-      const embeddingStr = `[${embedding.join(',')}]`;
-      const { rows } = await pool.query(
-        `SELECT content, memory_type, importance,
-                1 - (embedding <=> $1::vector) AS score
-         FROM public.memories
-         WHERE user_id = $2 AND embedding IS NOT NULL
-         ORDER BY embedding <=> $1::vector
-         LIMIT 5`,
-        [embeddingStr, userId]
-      );
+    const { rows } = await pool.query(
+      `SELECT content, type, importance
+       FROM public.memories
+       WHERE user_id = $1 AND active = true
+       ORDER BY importance DESC, created_at DESC
+       LIMIT 5`,
+      [userId]
+    );
 
-      results.memories = rows
-        .filter(r => r.score > 0.5)
-        .map(r => `- [${r.memory_type}] ${r.content} (relevance: ${r.score.toFixed(2)})`);
-    }
+    results.memories = rows.map(r => `- [${r.type}] ${r.content}`);
 
-    // 2. Get key-value context (always return all — it's small)
+    // Key-value context (always return all — it's small)
     const { rows: contextRows } = await pool.query(
       'SELECT key, value FROM public.user_context WHERE user_id = $1 ORDER BY updated_at DESC',
       [userId]

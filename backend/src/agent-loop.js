@@ -1,11 +1,11 @@
-// ── Agent loop: calls Ollama with function calling, executes tools, returns response ─
+// ── Agent loop: calls GLM (z.ai) with function calling, executes tools, returns response ─
 
 // Env vars read lazily (ESM imports are hoisted before dotenv config runs)
-function getOllamaConfig() {
+function getGlmConfig() {
   return {
-    baseUrl: process.env.OLLAMA_BASE_URL || 'https://ollama.com/v1',
-    apiKey:  process.env.OLLAMA_API_KEY  || '',
-    model:   process.env.OLLAMA_MODEL    || 'glm-5.1',
+    baseUrl: process.env.GLM_BASE_URL || 'https://api.z.ai/api/paas/v4',
+    apiKey:  process.env.GLM_API_KEY  || '',
+    model:   process.env.GLM_MODEL    || 'glm-4.5-flash',
   };
 }
 
@@ -100,7 +100,7 @@ function determineCallEnd(messages) {
  */
 async function runAgentLoop({ systemPrompt, messages, tools, pool, userId, maxIterations = 20 }) {
   const allMessages = []; // new messages generated during this loop
-  const { baseUrl: OLLAMA_BASE_URL, apiKey: OLLAMA_API_KEY, model: OLLAMA_MODEL } = getOllamaConfig();
+  const { baseUrl: GLM_BASE_URL, apiKey: GLM_API_KEY, model: GLM_MODEL } = getGlmConfig();
 
   let currentMessages = [
     { role: 'system', content: systemPrompt },
@@ -112,25 +112,26 @@ async function runAgentLoop({ systemPrompt, messages, tools, pool, userId, maxIt
     currentMessages = mergeSameRoleMessages(currentMessages);
 
     const body = {
-      model: OLLAMA_MODEL,
+      model: GLM_MODEL,
       messages: currentMessages,
       tools: tools.length > 0 ? tools : undefined,
       stream: false,
+      thinking: { type: 'disabled' },
     };
 
     const headers = { 'Content-Type': 'application/json' };
-    if (OLLAMA_API_KEY) headers['Authorization'] = `Bearer ${OLLAMA_API_KEY}`;
+    if (GLM_API_KEY) headers['Authorization'] = `Bearer ${GLM_API_KEY}`;
 
     let data;
     try {
-      const resp = await fetch(`${OLLAMA_BASE_URL}/chat/completions`, {
+      const resp = await fetch(`${GLM_BASE_URL}/chat/completions`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
       });
       if (!resp.ok) {
         const errText = await resp.text();
-        console.error(`[agent-loop] Ollama error ${resp.status}: ${errText.slice(0, 200)}`);
+        console.error(`[agent-loop] GLM error ${resp.status}: ${errText.slice(0, 200)}`);
         return { content: 'I encountered a system error. Please try again.', allMessages };
       }
       data = await resp.json();

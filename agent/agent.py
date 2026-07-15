@@ -31,9 +31,9 @@ load_dotenv(find_dotenv(usecwd=False))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jarvis")
 
-OLLAMA_API_KEY  = os.environ.get("OLLAMA_API_KEY", "")
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://ollama.com/v1")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
+GLM_API_KEY  = os.environ.get("GLM_API_KEY", "")
+GLM_BASE_URL = os.environ.get("GLM_BASE_URL", "https://api.z.ai/api/paas/v4")
+GLM_MODEL    = os.environ.get("GLM_MODEL", "glm-4.5-flash")
 GROQ_API_KEY    = os.environ.get("GROQ_API_KEY", "")
 GROQ_BASE_URL   = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 STT_MODEL       = os.environ.get("STT_MODEL", "whisper-large-v3")
@@ -55,10 +55,6 @@ SIGNOFFS = [
 
 CALLBACK_TYPES = {
     "wakeup": "wakeup",
-    "checkin-morning": "checkin-morning",
-    "checkin-midday": "checkin-midday",
-    "checkin-afternoon": "checkin-afternoon",
-    "evening": "evening",
     "night": "night",
     "jarvis": "jarvis",
 }
@@ -85,11 +81,7 @@ def _time_context() -> dict:
 # ── Call schedule for next-call info ──────────────────────────────────────────
 CALL_SCHEDULE = [
     ("wakeup",              5,  0),
-    ("checkin-morning",     8, 45),
-    ("checkin-midday",     12,  0),
-    ("checkin-afternoon",  16,  0),
-    ("evening",            20,  0),
-    ("night",              23,  0),
+    ("night",              22, 30),
 ]
 
 
@@ -419,9 +411,9 @@ Read out PENDING tasks only. Ask: "Do you want to follow this schedule, or add o
 - "follow master schedule" → proceed.
 After discussion: "Here is your final schedule." Re-read pending tasks. "Is this good to go?" Wait for confirmation.
 
-STEP 5 — NEXT 4 HOURS:
-Ask: "What is your focus for the next four hours?"
-Acknowledge. Say: "I will call you at 8:45 to check your progress."
+STEP 5 — NEXT FOCUS:
+Ask: "What is your focus for the day?"
+Acknowledge. Say: "I will check on you at 10:30 PM for the final review."
 
 STEP 6 — SIGN OFF:
 Motivational quote (1 line).
@@ -438,264 +430,6 @@ End EXACTLY with: "Happy morning, Mr. Stark. Goodbye."
 - The schedule data is already provided. Do NOT say you need to fetch it."""
 
 
-def _checkin_prompt(data: dict) -> str:
-    """DEPRECATED — kept for backward compat. Use specific time-slot prompts instead."""
-    return _midday_checkin_prompt(data, "", "")
-
-
-def _morning_checkin_prompt(data: dict, github_str: str = "", news_str: str = "") -> str:
-    t = _time_context()
-    tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
-    log_str = _format_daily_log(data.get("daily_log"))
-    next_call = _next_call_info("checkin-morning")
-    return f"""\
-You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 8:45 AM post-workout check-in.
-
-CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.{github_str}{news_str}
-
-=== TODAY'S PENDING TASKS ===
-{tasks_str}
-=== END TASKS ===
-
-=== TODAY'S LOG SO FAR ===
-{log_str}
-=== END LOG ===
-
-=== PROTOCOL — EXECUTE IN ORDER. DO NOT SKIP. ===
-
-STEP 1 — IDENTITY VERIFICATION:
-Say EXACTLY: "Identity verification. State your code."
-Accept ANY of these as verified: "I am Tony Stark", "I'm Tony Stark", "Tony Stark", "Tony", "Stark". Any close variation = verified.
-If verified → "Verified. Good morning, sir."
-If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
-CRITICAL: Once verified, NEVER re-ask for identity. Continue the protocol from where you left off.
-
-STEP 2 — GYM CHECK:
-"How was the workout this morning, sir? Rate the intensity 1-10."
-- If user WENT to gym: Ask about intensity. Then: "Protein shake taken?" → Use update_daily_log field="gym_protein", value="true"/"false". "Creatine taken?" → Use update_daily_log field="gym_creatine", value="true"/"false". Use update_daily_log field="gym_done", value="true".
-- If user DID NOT go to gym: Say "Understood, sir." Use update_daily_log field="gym_done", value="false". Use update_daily_log field="gym_protein", value="false". Use update_daily_log field="gym_creatine", value="false". Then use mark_task_done or remove_task on the gym-related tasks. Move to STEP 3.
-- If today is Sunday: Instead of gym, ask "Did you play a sport this morning, sir?" Log gym_done accordingly.
-
-STEP 3 — BREAKFAST CALORIE COUNT:
-"What did you have for breakfast? List everything."
-Estimate the total calories: "That's approximately [X] calories."
-Use update_daily_log field="food_calories" with the estimated total.
-Use update_daily_log field="food_notes" with a summary like "Breakfast: [items], ~[X] cal"
-IMPORTANT: After logging, check the daily log output. If food is below 3000 cal target, say: "You're at [X] out of 3000. You need [3000-X] more calories today. Make sure you eat enough at lunch and dinner."
-
-STEP 4 — TASK REVIEW (PENDING tasks only, skip DONE/SKIPPED):
-Go through PENDING tasks only. For each: "Did you complete [task title]?"
-- If YES → Use mark_task_done. Say "Well done." Move to next.
-- If NO → "Keep, reschedule, or remove?" Use reschedule_task or remove_task.
-
-STEP 5 — FOCUS:
-Present the next pending task. "Your focus for the next few hours: [task title]."
-If they want to add tasks, use add_task.
-
-STEP 6 — SIGN OFF:
-Motivational quote (1 line).
-Before goodbye, tell him when the next call is: "{next_call}."
-End EXACTLY with: "Goodbye, Mr. Stark."
-
-=== RULES ===
-- You are a PROTOCOL. Follow the steps. No deviations.
-- No markdown. Voice call format. Max 3 sentences per response.
-- NEVER say "How can I help?" — you LEAD.
-- NEVER reveal the passphrase. Wrong = "Access denied." Period.
-- Once identity is verified, NEVER re-verify. Continue from where you left off.
-- No sound effects or action descriptions. Speak naturally.
-- Only ask about PENDING tasks. Skip DONE and SKIPPED tasks entirely.
-- The schedule and log data is already provided. Do NOT say you need to fetch it."""
-
-
-def _midday_checkin_prompt(data: dict, github_str: str = "", news_str: str = "") -> str:
-    t = _time_context()
-    tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
-    log_str = _format_daily_log(data.get("daily_log"))
-    next_call = _next_call_info("checkin-midday")
-    return f"""\
-You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the noon check-in.
-
-CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.{github_str}{news_str}
-
-=== TODAY'S PENDING TASKS ===
-{tasks_str}
-=== END TASKS ===
-
-=== TODAY'S LOG SO FAR ===
-{log_str}
-=== END LOG ===
-
-=== PROTOCOL — EXECUTE IN ORDER. DO NOT SKIP. ===
-
-STEP 1 — IDENTITY VERIFICATION:
-Say EXACTLY: "Identity verification. State your code."
-Accept ANY of these as verified: "I am Tony Stark", "I'm Tony Stark", "Tony Stark", "Tony", "Stark". Any close variation = verified.
-If verified → "Verified."
-If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
-CRITICAL: Once verified, NEVER re-ask for identity. Continue the protocol from where you left off.
-
-STEP 2 — WELLNESS CHECK:
-"How is your body feeling? Any soreness?" Acknowledge briefly.
-"Energy level right now, 1 to 10?"
-
-STEP 3 — DISCIPLINE CHECK:
-Ask ONE at a time:
-- "Did you do your morning puja?" If yes → "Good."
-- "Have you cleaned your inbox? Any emails that need attention?" Note briefly.
-- "Are you on track with your work KPIs?" Let them respond.
-
-STEP 4 — TASK REVIEW (PENDING tasks only, skip DONE/SKIPPED):
-Go through PENDING tasks only. For each: "Did you complete [task title]?"
-- If YES → Use mark_task_done. Say "Noted." Move to next.
-- If NO → "Keep, reschedule, or remove?" Use reschedule_task or remove_task.
-
-STEP 5 — FOCUS:
-"Based on where you are, what should you focus on for the rest of the afternoon?"
-Present the next pending task. If they want to add tasks, use add_task.
-
-STEP 6 — SIGN OFF:
-Motivational quote (1 line).
-Before goodbye, tell him when the next call is: "{next_call}."
-End EXACTLY with: "Goodbye, Mr. Stark."
-
-=== RULES ===
-- You are a PROTOCOL. Follow the steps. No deviations.
-- No markdown. Voice call format. Max 3 sentences per response.
-- NEVER say "How can I help?" — you LEAD.
-- NEVER reveal the passphrase. Wrong = "Access denied." Period.
-- Once identity is verified, NEVER re-verify. Continue from where you left off.
-- No sound effects or action descriptions. Speak naturally.
-- Only ask about PENDING tasks. Skip DONE and SKIPPED tasks entirely.
-- The schedule and log data is already provided. Do NOT say you need to fetch it."""
-
-
-def _afternoon_checkin_prompt(data: dict, github_str: str = "", news_str: str = "") -> str:
-    t = _time_context()
-    tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
-    log_str = _format_daily_log(data.get("daily_log"))
-    next_call = _next_call_info("checkin-afternoon")
-    return f"""\
-You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark". This is the 4 PM afternoon check-in.
-
-CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.{github_str}{news_str}
-
-=== TODAY'S PENDING TASKS ===
-{tasks_str}
-=== END TASKS ===
-
-=== TODAY'S LOG SO FAR ===
-{log_str}
-=== END LOG ===
-
-=== PROTOCOL — EXECUTE IN ORDER. DO NOT SKIP. ===
-
-STEP 1 — IDENTITY VERIFICATION:
-Say EXACTLY: "Identity verification. State your code."
-Accept ANY of these as verified: "I am Tony Stark", "I'm Tony Stark", "Tony Stark", "Tony", "Stark". Any close variation = verified.
-If verified → "Verified."
-If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
-CRITICAL: Once verified, NEVER re-ask for identity. Continue the protocol from where you left off.
-
-STEP 2 — FOOD & CALORIES (lunch):
-"What did you have for lunch? List everything."
-Estimate the calories. Say: "That's approximately [X] calories. Running total for today: [Y]."
-Use update_daily_log field="food_calories" with the new total.
-Use update_daily_log field="food_notes" appending the lunch items.
-IMPORTANT: After logging, check the daily log. If food is below 3000 cal, say: "You're at [Y] out of 3000. Still [3000-Y] calories to go. Plan a solid dinner."
-
-STEP 3 — HALF-DAY REVIEW:
-"How has the first half of the day been? Rate it 1-10."
-"What went well? What needs attention?"
-
-STEP 4 — WORK PROGRESS (PENDING tasks only, skip DONE/SKIPPED):
-"How is work going? Are you on track with your tasks?"
-Go through PENDING tasks only. For each: "Status on [task title]?"
-- If done → Use mark_task_done. "Good."
-- If still pending → "Keep it or reschedule?" Use reschedule_task or remove_task.
-
-STEP 5 — FOCUS:
-Present the next priority task. "Your focus for the rest of the day: [task title]."
-
-STEP 6 — SIGN OFF:
-Motivational quote (1 line).
-Before goodbye, tell him when the next call is: "{next_call}."
-End EXACTLY with: "Goodbye, Mr. Stark."
-
-=== RULES ===
-- You are a PROTOCOL. Follow the steps. No deviations.
-- No markdown. Voice call format. Max 3 sentences per response.
-- NEVER say "How can I help?" — you LEAD.
-- NEVER reveal the passphrase. Wrong = "Access denied." Period.
-- Once identity is verified, NEVER re-verify. Continue from where you left off.
-- No sound effects or action descriptions. Speak naturally.
-- Only ask about PENDING tasks. Skip DONE and SKIPPED tasks entirely.
-- The schedule and log data is already provided. Do NOT say you need to fetch it."""
-
-
-def _evening_prompt(data: dict, github_str: str = "", news_str: str = "") -> str:
-    t = _time_context()
-    tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
-    log_str = _format_daily_log(data.get("daily_log"))
-    next_call = _next_call_info("evening")
-    return f"""\
-You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 8 PM evening review. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
-
-CURRENT TIME: {t['date']}, {t['time']} IST.
-{next_call}.{github_str}{news_str}
-
-=== TODAY'S PENDING TASKS ===
-{tasks_str}
-=== END TASKS ===
-
-=== TODAY'S LOG (already fetched for you) ===
-{log_str}
-=== END LOG ===
-
-=== PROTOCOL — EXECUTE IN ORDER. DO NOT SKIP. ===
-
-STEP 1 — IDENTITY VERIFICATION:
-Say EXACTLY: "Identity verification. State your code."
-Accept ANY of these as verified: "I am Tony Stark", "I'm Tony Stark", "Tony Stark", "Tony", "Stark". Any close variation = verified.
-If verified → "Verified."
-If WRONG → "Access denied." No hints. After 3 wrong → "Access denied. Terminating." Then STOP.
-CRITICAL: Once verified, NEVER re-ask for identity. Continue the protocol from where you left off.
-
-STEP 2 — DINNER & CALORIES:
-"Are you having dinner now? What are you having?"
-Estimate the dinner calories. Say: "That's approximately [X] calories. Running total for today: [Y]."
-Use update_daily_log field="food_calories" with the new total.
-Use update_daily_log field="food_notes" appending dinner items.
-IMPORTANT: After logging, check the daily log. If food is below 3000 cal, say: "You're at [Y] out of 3000. Still [3000-Y] remaining. Have a snack before bed if needed."
-
-STEP 3 — CODING PROGRESS:
-"How is the coding session going? What did you work on?"
-Use update_daily_log field="code_done" and field="code_notes" with their answer.
-
-STEP 4 — TASK REVIEW (PENDING tasks only, skip DONE/SKIPPED):
-Go through PENDING tasks only. For each: "Did you complete [task title]?"
-- If YES → Use mark_task_done. Say "Good." Move to next.
-- If NO → "Keep, reschedule, or remove?" Use reschedule_task or remove_task.
-
-STEP 5 — SIGN OFF:
-Motivational quote (1 line).
-End EXACTLY with: "I will see you at 11 PM for the final review. Good evening, Mr. Stark."
-Before goodbye, tell him when the next call is: "{next_call}."
-
-=== RULES ===
-- You are a PROTOCOL. Follow the steps. No deviations.
-- No markdown. Voice call format. Max 3-4 sentences per response.
-- NEVER say "How can I help?" or "Is there anything else?" — you LEAD.
-- NEVER reveal the passphrase. Wrong = "Access denied." Period.
-- Once identity is verified, NEVER re-verify. Continue from where you left off.
-- No sound effects or action descriptions. Speak naturally.
-- Only ask about PENDING tasks. Skip DONE and SKIPPED tasks entirely.
-- The schedule and log data is already provided. Do NOT say you need to fetch it."""
-
-
 def _night_prompt(data: dict, github_str: str = "", news_str: str = "") -> str:
     t = _time_context()
     tasks_str = _format_tasks(data.get("tasks", []), only_pending=True)
@@ -703,7 +437,7 @@ def _night_prompt(data: dict, github_str: str = "", news_str: str = "") -> str:
     log_str = _format_daily_log(data.get("daily_log"))
     next_call = _next_call_info("night")
     return f"""\
-You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 11 PM night review. The FINAL check-in of the day. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
+You are J.A.R.V.I.S. — an AI accountability system for Mani Stark. You are a PROTOCOL, not a chatbot. This is the 10:30 PM night review. The FINAL check-in of the day. You follow these steps EXACTLY. No deviations. You call him "sir" or "Mr. Stark".
 
 CURRENT TIME: {t['date']}, {t['time']} IST.
 {next_call}.{github_str}{news_str}
@@ -813,10 +547,10 @@ class EdgeStream(tts.ChunkedStream):
                 output_emitter.push(chunk["data"])
 
 
-# ─── Ollama Cloud LLM (merges consecutive same-role messages) ─────────────────
+# ─── GLM (z.ai) LLM (merges consecutive same-role messages) ──────────────────
 
-class OllamaCloudLLM(lk_openai.LLM):
-    """Ollama Cloud requires strict user/assistant alternation.
+class GLMLLM(lk_openai.LLM):
+    """GLM's OpenAI-compatible endpoint requires strict user/assistant alternation.
     LiveKit can send consecutive same-role messages (e.g. two assistant messages).
     This subclass merges same-role messages in the provider-format output."""
 
@@ -1099,46 +833,6 @@ class WakeupAgent(Agent):
         await self.session.say("Please state your identity, sir.")
 
 
-class MorningCheckinAgent(Agent):
-    def __init__(self, instructions: str):
-        super().__init__(instructions=instructions, tools=[
-            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task, search_memory, save_memory,
-        ])
-
-    async def on_enter(self) -> None:
-        await self.session.say("Good morning, sir. Time for your post-workout check-in.")
-
-
-class MiddayCheckinAgent(Agent):
-    def __init__(self, instructions: str):
-        super().__init__(instructions=instructions, tools=[
-            mark_task_done, reschedule_task, remove_task, add_task, search_memory, save_memory,
-        ])
-
-    async def on_enter(self) -> None:
-        await self.session.say("Identification, sir.")
-
-
-class AfternoonCheckinAgent(Agent):
-    def __init__(self, instructions: str):
-        super().__init__(instructions=instructions, tools=[
-            mark_task_done, update_daily_log, log_calories, reschedule_task, remove_task, search_memory, save_memory,
-        ])
-
-    async def on_enter(self) -> None:
-        await self.session.say("Afternoon identification, sir.")
-
-
-class EveningAgent(Agent):
-    def __init__(self, instructions: str):
-        super().__init__(instructions=instructions, tools=[
-            mark_task_done, update_daily_log, log_calories, remove_task, reschedule_task, search_memory, save_memory,
-        ])
-
-    async def on_enter(self) -> None:
-        await self.session.say("Evening identification, sir.")
-
-
 class NightAgent(Agent):
     def __init__(self, instructions: str):
         super().__init__(instructions=instructions, tools=[
@@ -1195,34 +889,6 @@ async def entrypoint(ctx: JobContext) -> None:
         prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
         agent = WakeupAgent(instructions=prompt)
         logger.info("Running WakeupAgent")
-    elif room_name.startswith("checkin-morning"):
-        call_type_key = "checkin-morning"
-        memory_str = await _fetch_relevant_memories("checkin-morning")
-        base_prompt = _morning_checkin_prompt(data, github_str, news_str)
-        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
-        agent = MorningCheckinAgent(instructions=prompt)
-        logger.info("Running MorningCheckinAgent")
-    elif room_name.startswith("checkin-midday"):
-        call_type_key = "checkin-midday"
-        memory_str = await _fetch_relevant_memories("checkin-midday")
-        base_prompt = _midday_checkin_prompt(data, github_str, news_str)
-        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
-        agent = MiddayCheckinAgent(instructions=prompt)
-        logger.info("Running MiddayCheckinAgent")
-    elif room_name.startswith("checkin-afternoon"):
-        call_type_key = "checkin-afternoon"
-        memory_str = await _fetch_relevant_memories("checkin-afternoon")
-        base_prompt = _afternoon_checkin_prompt(data, github_str, news_str)
-        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
-        agent = AfternoonCheckinAgent(instructions=prompt)
-        logger.info("Running AfternoonCheckinAgent")
-    elif room_name.startswith("evening"):
-        call_type_key = "evening"
-        memory_str = await _fetch_relevant_memories("evening")
-        base_prompt = _evening_prompt(data, github_str, news_str)
-        prompt = base_prompt + ("\n\n" + memory_str if memory_str else "")
-        agent = EveningAgent(instructions=prompt)
-        logger.info("Running EveningAgent")
     elif room_name.startswith("night"):
         call_type_key = "night"
         memory_str = await _fetch_relevant_memories("night")
@@ -1266,12 +932,14 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     stt_adapter = StreamAdapter(stt=stt_plugin, vad=stt_vad)
 
-    # LLM: Ollama Cloud with role-merge for strict APIs
-    llm_plugin = OllamaCloudLLM(
-        base_url=OLLAMA_BASE_URL,
-        api_key=OLLAMA_API_KEY,
-        model=OLLAMA_MODEL,
+    # LLM: GLM (z.ai) with role-merge for strict APIs; thinking disabled for
+    # fast turn-taking (~2s vs ~20s with thinking on)
+    llm_plugin = GLMLLM(
+        base_url=GLM_BASE_URL,
+        api_key=GLM_API_KEY,
+        model=GLM_MODEL,
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
     # TTS: EdgeTTS with sentence-level streaming for faster first audio

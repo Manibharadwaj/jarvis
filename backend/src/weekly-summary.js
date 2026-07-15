@@ -10,9 +10,9 @@ import crypto from 'crypto';
 
 const { Pool } = pg;
 
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'https://ollama.com/v1';
-const OLLAMA_KEY = process.env.OLLAMA_API_KEY || '';
-const MODEL_NAME = process.env.OLLAMA_MODEL || 'gemma3:12b';
+const GLM_BASE_URL = process.env.GLM_BASE_URL || 'https://api.z.ai/api/paas/v4';
+const GLM_KEY = process.env.GLM_API_KEY || '';
+const MODEL_NAME = process.env.GLM_MODEL || 'glm-4.5-flash';
 const TZ = 'Asia/Kolkata';
 
 /**
@@ -124,10 +124,10 @@ Write a concise weekly summary (3-4 sentences) that:
 Be direct, encouraging, and specific. Use data. No fluff. Maximum 200 words.`;
 
   const headers = { 'Content-Type': 'application/json' };
-  if (OLLAMA_KEY) headers['Authorization'] = `Bearer ${OLLAMA_KEY}`;
+  if (GLM_KEY) headers['Authorization'] = `Bearer ${GLM_KEY}`;
 
   try {
-    const resp = await fetch(`${OLLAMA_BASE_URL}/chat/completions`, {
+    const resp = await fetch(`${GLM_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -136,6 +136,7 @@ Be direct, encouraging, and specific. Use data. No fluff. Maximum 200 words.`;
         stream: false,
         temperature: 0.7,
         max_tokens: 300,
+        thinking: { type: 'disabled' },
       }),
       signal: AbortSignal.timeout(60_000),
     });
@@ -160,7 +161,7 @@ ${summaryText}`;
 
     let keyPoints = [];
     try {
-      const kpResp = await fetch(`${OLLAMA_BASE_URL}/chat/completions`, {
+      const kpResp = await fetch(`${GLM_BASE_URL}/chat/completions`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -169,6 +170,7 @@ ${summaryText}`;
           stream: false,
           temperature: 0.3,
           max_tokens: 100,
+          thinking: { type: 'disabled' },
         }),
         signal: AbortSignal.timeout(30_000),
       });
