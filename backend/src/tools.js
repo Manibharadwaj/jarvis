@@ -322,10 +322,6 @@ async function executeTool(name, args, pool, userId) {
 
 const TOOLS_BY_CALL_TYPE = {
   wakeup: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
-  'checkin-morning': ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
-  'checkin-midday': ['mark_task_done', 'reschedule_task', 'remove_task', 'add_task', 'save_memory', 'search_memory'],
-  'checkin-afternoon': ['mark_task_done', 'update_daily_log', 'log_calories', 'reschedule_task', 'remove_task', 'save_memory', 'search_memory'],
-  evening: ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
   night: ['mark_task_done', 'update_daily_log', 'log_calories', 'remove_task', 'reschedule_task', 'save_memory', 'search_memory'],
   jarvis: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'update_daily_log', 'log_calories', 'save_memory', 'search_memory'],
   manual: ['add_task', 'mark_task_done', 'remove_task', 'reschedule_task', 'update_daily_log', 'log_calories', 'save_memory', 'search_memory'],

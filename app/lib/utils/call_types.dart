@@ -2,10 +2,6 @@ import 'package:flutter/material.dart';
 
 const callTypeLabels = {
   'wakeup': 'Wake Up',
-  'checkin-morning': 'Morning Check-in',
-  'checkin-midday': 'Midday Check-in',
-  'checkin-afternoon': 'Afternoon Check-in',
-  'evening': 'Evening Review',
   'night': 'Night Review',
   'jarvis': 'Manual Call',
   'manual': 'Manual Call',
@@ -13,10 +9,6 @@ const callTypeLabels = {
 
 const callTypeIcons = {
   'wakeup': Icons.alarm,
-  'checkin-morning': Icons.fitness_center,
-  'checkin-midday': Icons.wb_sunny,
-  'checkin-afternoon': Icons.local_cafe,
-  'evening': Icons.nightlight,
   'night': Icons.bedtime,
   'jarvis': Icons.phone,
   'manual': Icons.phone,
